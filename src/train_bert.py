@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
 import mlflow
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
 
 def main():
     # 1. Configuration

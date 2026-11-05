@@ -1,6 +1,9 @@
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
+
 from src import bert_model
+
 
 def main():
     # 1. Load the test subset (using the fixture for development)
