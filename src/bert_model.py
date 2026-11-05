@@ -1,53 +1,70 @@
+"""nlptown BERT sentiment model adapter."""
+
+from pathlib import Path
+
 from transformers import pipeline
 
-# Global pipeline instance
-_classifier = None
+from src.common import Prediction
 
-def load_model(model_path: str = "nlptown/bert-base-multilingual-uncased-sentiment"):
-    """
-    Initializes the sentiment pipeline. 
-    By default it uses the Hugging Face repo, but can point to a local saved directory.
-    """
-    global _classifier
-    _classifier = pipeline(
-        "sentiment-analysis", 
-        model=model_path, 
-        tokenizer=model_path,
-        truncation=True, 
-        max_length=512
-    )
 
-def map_stars_to_label(star_label: str) -> str:
-    """
-    Applies the explicit Star Mapping Policy:
-    1-3 stars -> negative
-    4-5 stars -> positive
-    """
-    if star_label in ["1 star", "2 stars", "3 stars"]:
-        return "negative"
-    elif star_label in ["4 stars", "5 stars"]:
-        return "positive"
-    else:
-        raise ValueError(f"Unexpected label format: {star_label}")
+class BertPredictor:
+    """Adapt the nlptown Hugging Face pipeline to the shared Predictor contract."""
 
-def predict(texts: list[str]) -> list[dict]:
-    """
-    Predictor interface.
-    Returns a list of dictionaries with the mapped 'negative'/'positive' label 
-    and the model's confidence score.
-    """
-    if _classifier is None:
-        # Fallback initialization if not explicitly loaded
-        load_model()
-        
-    raw_predictions = _classifier(texts)
-    
-    results = []
-    for pred in raw_predictions:
-        mapped_label = map_stars_to_label(pred["label"])
-        results.append({
-            "label": mapped_label,
-            "score": pred["score"]  # Including optional scores as supported
-        })
-        
-    return results
+    name = "nlptown-bert-multilingual"
+
+    def __init__(self, model_path: str | Path):
+        model_path = Path(model_path)
+
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Saved model not found at {model_path}. " "Run `python -m src.train_bert` first."
+            )
+
+        self.classifier = pipeline(
+            "sentiment-analysis",
+            model=str(model_path),
+            tokenizer=str(model_path),
+            truncation=True,
+            max_length=512,
+        )
+
+    @staticmethod
+    def map_stars_to_label(star_label: str) -> str:
+        """Map 1–3 stars to negative and 4–5 stars to positive."""
+        mapping = {
+            "1 star": "negative",
+            "2 stars": "negative",
+            "3 stars": "negative",
+            "4 stars": "positive",
+            "5 stars": "positive",
+        }
+
+        try:
+            return mapping[star_label]
+        except KeyError:
+            raise ValueError(f"Unexpected nlptown label: {star_label!r}") from None
+
+    def predict(self, texts: list[str]) -> list[Prediction]:
+        if not texts:
+            return []
+
+        raw_predictions = self.classifier(
+            texts,
+            batch_size=32,
+            truncation=True,
+            max_length=512,
+        )
+
+        if len(raw_predictions) != len(texts):
+            raise RuntimeError(
+                f"Model returned {len(raw_predictions)} predictions "
+                f"for {len(texts)} input texts."
+            )
+
+        return [
+            Prediction(
+                label=self.map_stars_to_label(result["label"]),
+                score=float(result["score"]),
+            )
+            for result in raw_predictions
+        ]

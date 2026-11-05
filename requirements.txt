@@ -1,14 +1,28 @@
-# Pinned for Python 3.11. Add new dependencies in your own PR and pin the version.
-# Abdullah: add torch and transformers (and any BERT libraries) here.
-# Muskan: add the LLM provider SDK here.
+# Python 3.11 dependencies
+
+
+# Data processing
 pandas==2.2.3
 numpy==1.26.4
-scikit-learn==1.5.2
 datasets==3.2.0
+
+# Machine learning
+scikit-learn==1.5.2
+torch==2.15.0
+transformers==5.22.1
+
+# Experiment tracking
 mlflow==2.19.0
+SQLAlchemy==2.0.57
+
+# API
 fastapi==0.115.6
 pydantic==2.10.4
 uvicorn==0.34.0
+
+# Testing and HTTP
 httpx==0.28.1
 pytest==8.3.4
+
+# Code quality
 ruff==0.8.4

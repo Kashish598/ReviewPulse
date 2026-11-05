@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field, field_validator
 
-from src.common import MockPredictor, Predictor
+from src.common import MODELS_DIR, Predictor
 
 MAX_TEXT_CHARS = 5000
 logger = logging.getLogger(__name__)
@@ -36,9 +36,12 @@ class PredictResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_predictor() -> Predictor:
-    # TODO (after BERT PR): load the saved BERT artifact here instead of the mock.
-    logger.warning("Serving MockPredictor. This is not a real model.")
-    return MockPredictor()
+    from src.bert_model import BertPredictor
+
+    model_path = MODELS_DIR / "nlptown_sentiment"
+    logger.info("Loading sentiment model from %s", model_path)
+
+    return BertPredictor(model_path)
 
 
 app = FastAPI(title="ReviewPulse", version="0.1.0")

@@ -1,102 +1,295 @@
 # ReviewPulse
 
-Sentiment analysis service for Amazon product reviews. A BERT classifier is served through FastAPI, and an LLM labels the same held-out reviews for an offline comparison.
+A sentiment analysis service for Amazon product reviews. ReviewPulse prepares a reproducible dataset, evaluates pretrained BERT sentiment models, tracks model-selection experiments with MLflow, and serves the selected model through a FastAPI REST API.
 
-Status: Milestone 1 in progress. This README is the single source of truth for the shared decisions below.
+**Status:** Milestone 1 — model evaluation and API implementation.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Amazon Polarity] --> B[prepare_data.py]
-    B --> C[train / validation / test CSV]
-    C --> D[BERT: train_bert.py, evaluate_bert.py]
-    C --> E[LLM: evaluate_llm.py]
-    D --> F[Saved BERT model]
-    F --> G[FastAPI: app.py]
-    D --> H[MLflow]
-    E --> H
-    D --> I[Comparison]
-    E --> I
+    A[Amazon Polarity Dataset] --> B[prepare_data.py]
+    B --> C[Train / Validation / Test CSVs]
+    C --> D[Candidate Model Evaluation]
+    D --> E[MLflow Experiment Tracking]
+    D --> F[Selected nlptown BERT]
+    F --> G[train_bert.py: Save Model Locally]
+    G --> H[FastAPI: app.py]
+    C --> I[evaluate_bert.py]
+    H --> J[POST /predict]
+    I --> K[Test Metrics and Predictions]
 ```
 
-The API serves BERT only. The LLM is used for offline evaluation.
+The API serves the selected BERT model. Model selection is based on validation-set performance. The held-out test set is reserved for final evaluation.
 
-## Quick start
+## Technology Stack
 
-Python 3.11.
+- **Language:** Python 3.11
+- **Data processing:** pandas, NumPy, Hugging Face Datasets
+- **Machine learning:** scikit-learn, PyTorch, Transformers
+- **Experiment tracking:** MLflow
+- **API:** FastAPI, Pydantic, Uvicorn
+- **Testing and code quality:** pytest, Ruff
+
+## Quick Start
+
+### 1. Clone the repository
 
 ```bash
-git clone <repo-url> && cd ReviewPulse
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-make setup        # or: pip install -r requirements.txt
-make data         # or: python -m src.prepare_data
-make test         # or: pytest -v
-make api          # or: uvicorn src.app:app --reload   (docs at http://127.0.0.1:8000/docs)
+git clone https://github.com/Kashish598/ReviewPulse.git
+cd ReviewPulse
 ```
 
-`make data` downloads the dataset from Hugging Face and writes the splits to `data/processed/`. These files are not committed. Seed 42 makes every machine produce the same files, as long as the dataset revision is the same. `DATASET_REVISION` in `src/common.py` pins it, and `/health` on the API reports which model is being served.
+### 2. Create and activate a virtual environment
 
-## Dataset and task
+```bash
+python -m venv .venv
+```
 
-- Dataset: `fancyzhx/amazon_polarity` (Hugging Face). Binary task, no neutral class.
-- Labels: `0` = negative, `1` = positive.
-- Model input: the `content` column only. `title` is not used.
+Windows:
 
-## Shared decisions
+```bash
+.venv\Scripts\activate
+```
 
-- Splits: 40,000 train, 10,000 validation, 10,000 test. Seed 42.
-- Train and validation are sampled from the official train split. Test is sampled from the official test split.
-- No stratification. Plain random sampling. Final label counts are in `docs/data_report.json`.
-- Cleaning: remove missing and empty reviews, remove exact duplicates before sampling, remove from the test pool any review that also appears in the train pool. Text is otherwise untouched (casing, punctuation, stop words, emojis kept).
-- Metrics: macro-F1 (primary), accuracy and confusion matrix (secondary). BERT vs LLM agreement is reported separately and does not measure correctness.
-- Test labels are never used to tune prompts, choose checkpoints or tune hyperparameters. The final configuration is run once on test.
-- The LLM never sees gold labels or BERT predictions.
+macOS/Linux:
 
-## Shared code (`src/common.py`)
+```bash
+source .venv/bin/activate
+```
 
-Import these instead of redefining them:
+### 3. Install dependencies
 
-| Name | Use |
+```bash
+python -m pip install -r requirements.txt
+```
+
+### 4. Prepare the dataset
+
+```bash
+python -m src.prepare_data
+```
+
+This downloads the Amazon Polarity dataset from Hugging Face, cleans the review text, creates the train, validation, and test splits, and writes the processed files to `data/processed/`.
+
+### 5. Save the selected model locally
+
+```bash
+python -m src.train_bert
+```
+
+This downloads the selected pretrained model and tokenizer and saves them under `models/nlptown_sentiment/`. This step does **not** fine-tune the model.
+
+### 6. Run the API
+
+```bash
+python -m uvicorn src.app:app --reload
+```
+
+Open the interactive API documentation at:
+
+[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### 7. Run tests and lint checks
+
+```bash
+python -m pytest -v
+python -m ruff check .
+python -m ruff format --check src tests
+```
+
+## Dataset and Task
+
+- **Dataset:** [`fancyzhx/amazon_polarity`](https://huggingface.co/datasets/fancyzhx/amazon_polarity)
+- **Task:** Binary sentiment classification.
+- **Labels:** `0` = negative, `1` = positive.
+- **Model input:** The review `content` field. The `title` field is not used.
+- **Random seed:** `42`.
+- **Dataset revision:** Pinned in `src/common.py` to support reproducibility.
+
+### Dataset Splits
+
+| Split | Number of reviews | Purpose |
+|---|---:|---|
+| Training | 10,000 | Training data / model preparation workflow |
+| Validation | 1,000 | Candidate model selection |
+| Test | 200 | Final held-out evaluation |
+
+Training and validation examples are sampled from the official training split. Test examples are sampled from the official test split.
+
+Sampling is not stratified. The data preparation pipeline removes missing or empty reviews, removes exact duplicates before sampling, and excludes test-pool reviews that also occur in the training pool. Text is otherwise preserved, including casing, punctuation, stop words, and emojis.
+
+The dataset files are generated locally and are not required to be committed to the repository. The pinned dataset revision and random seed are used to make the preparation process reproducible.
+
+## Model Selection
+
+Three pretrained sentiment-analysis checkpoints were evaluated on the same validation set. Macro-F1 was the primary selection metric; accuracy was used as a secondary metric.
+
+| Candidate | Validation Accuracy | Validation Macro-F1 |
+|---|---:|---:|
+| DistilBERT (`distilbert-base-uncased-finetuned-sst-2-english`) | 0.8910 | 0.8909 |
+| RoBERTa (`cardiffnlp/twitter-roberta-base-sentiment`) | 0.8970 | 0.8969 |
+| **nlptown BERT (`nlptown/bert-base-multilingual-uncased-sentiment`)** | **0.9300** | **0.9298** |
+
+The nlptown checkpoint was selected because it achieved the highest validation accuracy and macro-F1 among the evaluated candidates.
+
+The selected checkpoint is a pretrained five-star sentiment model. ReviewPulse maps its output to binary sentiment labels as follows:
+
+- 1, 2, and 3 stars → `negative`
+- 4 and 5 stars → `positive`
+
+The model is used without additional fine-tuning in this milestone.
+
+### MLflow Tracking
+
+The candidate-model validation results and associated parameters are recorded in the `reviewpulse-bert` MLflow experiment.
+
+The tracking workflow records information such as the model checkpoint, label mapping, truncation configuration, maximum sequence length, and evaluation metrics.
+
+To log the recorded candidate results:
+
+```bash
+python -m src.log_bert_runs
+```
+
+MLflow's local tracking database and run artifacts are generated locally. They should not be confused with the model-selection results themselves; the validation metrics above are the reported comparison results.
+
+## Held-Out Test Evaluation
+
+The selected nlptown BERT model was evaluated on the held-out test set of 200 reviews. These examples were not used for candidate selection or model tuning.
+
+| Metric | Result |
+|---|---:|
+| Accuracy | 0.9400 |
+| Macro-F1 | 0.9397 |
+| Correct predictions | 188 / 200 |
+
+### Classification Report
+
+| Class | Precision | Recall | F1-score | Support |
+|---|---:|---:|---:|---:|
+| Negative | 0.93 | 0.96 | 0.94 | 105 |
+| Positive | 0.96 | 0.92 | 0.94 | 95 |
+
+### Confusion Matrix
+
+Rows represent actual labels; columns represent predicted labels.
+
+| Actual / Predicted | Negative | Positive |
+|---|---:|---:|
+| Negative | 101 | 4 |
+| Positive | 8 | 87 |
+
+The model correctly classified 188 of the 200 test reviews. The final test accuracy was 94%, with a macro-F1 score of approximately 0.9397.
+
+### Reproduce the Test Evaluation
+
+After preparing the data and saving the model locally, run:
+
+```bash
+python -m src.evaluate_bert
+```
+
+The evaluation script runs inference on the held-out test split and saves the predictions under `data/predictions/`.
+
+## API Usage
+
+Start the API:
+
+```bash
+python -m uvicorn src.app:app --reload
+```
+
+### Health Check
+
+```http
+GET /health
+```
+
+Returns the API status and the name of the model being served.
+
+### Sentiment Prediction
+
+```http
+POST /predict
+Content-Type: application/json
+```
+
+Example request:
+
+```json
+{
+  "text": "I absolutely love this product. It works perfectly!"
+}
+```
+
+The endpoint returns a sentiment prediction and its associated model score. The score is the confidence associated with the model's original star prediction; it should not be interpreted as a calibrated probability of the mapped binary sentiment.
+
+Interactive request and response schemas are available through `/docs`.
+
+## Shared Code (`src/common.py`)
+
+| Component | Purpose |
 |---|---|
-| `load_split(name, sample=False)` | Returns `row_id, review_text, label`. `sample=True` reads the small fixture in `data/sample/`. |
-| `load_test_subset(n, sample=False)` | First n test rows in a fixed shuffled order. Use it for the LLM, and score BERT on the same rows for the comparison. |
-| `compute_metrics(y_true, y_pred)` | Macro-F1, accuracy, confusion matrix. Accepts 0/1 or `negative`/`positive`. Raises on any other value. |
-| `Predictor`, `Prediction` | Interface for model adapters: `predict(texts) -> list[Prediction]` with `label` (`negative` or `positive`) and optional `score`. |
-| `write_predictions(...)`, `read_predictions(...)` | Predictions CSV with columns `row_id, label_true, pred, score`. |
-| `MLFLOW_BERT_EXPERIMENT`, `MLFLOW_LLM_EXPERIMENT` | MLflow experiment names: `reviewpulse-bert`, `reviewpulse-llm`. |
+| `load_split(name, sample=False)` | Loads a prepared dataset split. |
+| `compute_metrics(y_true, y_pred)` | Computes macro-F1, accuracy, and confusion matrix. |
+| `Predictor`, `Prediction` | Shared interface and prediction representation for model adapters. |
+| `write_predictions(...)`, `read_predictions(...)` | Writes and reads prediction CSV files. |
+| `MLFLOW_BERT_EXPERIMENT` | Shared MLflow experiment name for BERT experiments. |
 
-Predictions go to `data/predictions/bert_test.csv` and `data/predictions/llm_test.csv`.
+Predictions use the columns `row_id`, `label_true`, `pred`, and `score`.
 
-## Repository layout
+## Repository Layout
 
+```text
+ReviewPulse/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── data/
+│   ├── sample/          # Small test fixtures, if included
+│   ├── processed/       # Generated dataset splits
+│   └── predictions/     # Generated evaluation predictions
+├── docs/                # Supporting documentation and data report
+├── models/              # Locally saved model weights
+├── src/
+│   ├── app.py
+│   ├── common.py
+│   ├── prepare_data.py
+│   ├── train_bert.py
+│   ├── evaluate_bert.py
+│   ├── bert_model.py
+│   └── log_bert_runs.py
+├── tests/
+├── README.md
+├── CONTRIBUTION.md
+├── AI_USAGE.md
+├── requirements.txt
+└── pyproject.toml
 ```
-src/            code (prepare_data.py, common.py, app.py, plus each member's scripts)
-tests/          pytest files
-data/sample/    small fixture, committed
-data/predictions/  prediction files, committed
-data/processed/ full splits, generated, not committed
-models/         model weights, not committed
-.github/workflows/ci.yml
-```
 
-## Team workflow
+Generated dataset splits, model weights, virtual environments, MLflow run artifacts, and local database files should not be committed unless explicitly required for a particular deliverable.
 
-- Branch names: `feat/...`, `fix/...`, `infra/...`.
-- Open a PR for everything. One approval from another member before merging to `main`. No direct pushes to `main`.
-- Run `ruff check .` and `pytest` before pushing. CI runs the same two commands.
-- Do not commit data splits, model weights, API keys or `mlruns/`.
-- Add each new dependency to `requirements.txt` with a pinned version, in the same PR that needs it.
-- Commit an MLflow summary (CSV or screenshot) of your runs, since `mlruns/` is not shared.
+## Team Workflow
+
+- Use descriptive branches such as `feat/...`, `fix/...`, and `infra/...`.
+- Open a pull request for changes and obtain approval from another team member before merging into `main`.
+- Run Ruff and pytest before pushing changes.
+- CI runs the repository's configured lint and test checks.
+- Add new dependencies to `requirements.txt` with pinned versions in the same change that introduces them.
+- Do not commit API keys, virtual environments, generated model weights, or local MLflow artifact directories.
 
 ## Tests
 
+Run the complete test suite:
+
 ```bash
-pytest -v
+python -m pytest -v
 ```
 
-Covers data preparation, shared utilities and the API. BERT model loading tests and LLM parser tests are added with those components.
+The tests cover data preparation, shared utilities, the BERT model adapter, and the FastAPI endpoints.
 
-## Still to be filled in (later in M1)
+## Additional Documentation
 
-MLflow best run and justification, evaluation results, API usage examples, model download instructions, CONTRIBUTION.md, AI_USAGE.md.
+- `CONTRIBUTION.md` — team responsibilities and contributions.
+- `AI_USAGE.md` — disclosure of AI-assisted development and review.
