@@ -111,9 +111,9 @@ python -m ruff format --check src tests
 
 | Split | Number of reviews | Purpose |
 |---|---:|---|
-| Training | 10,000 | Training data / model preparation workflow |
+| Training | 10,000 | Not used by the BERT models (no fine-tuning); reserved for the TF-IDF baseline |
 | Validation | 1,000 | Candidate model selection |
-| Test | 200 | Final held-out evaluation |
+| Test | 600 | Final held-out evaluation |
 
 Training and validation examples are sampled from the official training split. Test examples are sampled from the official test split.
 
@@ -142,34 +142,49 @@ The model is used without additional fine-tuning in this milestone.
 
 ### MLflow Tracking
 
-The candidate-model validation results and associated parameters are recorded in the `reviewpulse-bert-candidates` MLflow experiment. Candidate runs come from notebooks/bert_candidate_selection.ipynb (Kaggle GPU) and are listed in docs/mlflow_bert_candidates.csv
+Experiments are tracked with MLflow:
 
-The tracking workflow records information such as the model checkpoint, label mapping, truncation configuration, maximum sequence length, and evaluation metrics.
+| Experiment | Contents |
+|---|---|
+| `reviewpulse-bert-candidates` | The three candidate runs from `notebooks/bert_candidate_selection.ipynb` (Kaggle GPU), kept in the original Kaggle database `notebooks/kaggle_mlflow.db`. |
+| `reviewpulse-bert` | The same three candidate runs copied into the repository's experiment (tag `source=kaggle_mlflow_db`), plus the run logged by `python -m src.train_bert`. |
 
-To log the recorded candidate results:
+Each candidate run records the model checkpoint, label-mapping policy, truncation setting, maximum sequence length (512) and the validation accuracy and macro-F1. `docs/mlflow_runs_summary.csv` is an export of the runs in `reviewpulse-bert`, including the three candidates, with their parameters, metrics and run IDs.
 
-```bash
-python -m src.log_bert_runs
+MLflow 3 no longer accepts the old `./mlruns` folder as a tracking location, so use a database backend. Set the tracking URI before running any script that logs to MLflow, and use the same value for `mlflow ui`.
+
+Windows (PowerShell):
+
+```powershell
+$env:MLFLOW_TRACKING_URI = "sqlite:///reviewpulse_mlflow.db"
+mlflow ui --backend-store-uri sqlite:///reviewpulse_mlflow.db
 ```
 
-MLflow's local tracking database and run artifacts are generated locally. They should not be confused with the model-selection results themselves; the validation metrics above are the reported comparison results.
+macOS/Linux:
+
+```bash
+export MLFLOW_TRACKING_URI=sqlite:///reviewpulse_mlflow.db
+mlflow ui --backend-store-uri sqlite:///reviewpulse_mlflow.db
+```
+
+The candidate runs were logged with MLflow 3.18.0, the version used by the project. MLflow databases and run artifacts are generated locally and are not committed. The validation metrics above and the CSV files in `docs/` are the reported comparison results.
 
 ## Held-Out Test Evaluation
 
-The selected nlptown BERT model was evaluated on the held-out test set of 200 reviews. These examples were not used for candidate selection or model tuning.
+The selected nlptown BERT model was evaluated once on the held-out test set of 600 reviews. These examples were not used for candidate selection or model tuning.
 
 | Metric | Result |
 |---|---:|
-| Accuracy | 0.9400 |
-| Macro-F1 | 0.9397 |
-| Correct predictions | 188 / 200 |
+| Accuracy | 0.9283 |
+| Macro-F1 | 0.9282 |
+| Correct predictions | 557 / 600 |
 
 ### Classification Report
 
 | Class | Precision | Recall | F1-score | Support |
 |---|---:|---:|---:|---:|
-| Negative | 0.93 | 0.96 | 0.94 | 105 |
-| Positive | 0.96 | 0.92 | 0.94 | 95 |
+| Negative | 0.91 | 0.96 | 0.93 | 302 |
+| Positive | 0.95 | 0.90 | 0.93 | 298 |
 
 ### Confusion Matrix
 
@@ -177,10 +192,10 @@ Rows represent actual labels; columns represent predicted labels.
 
 | Actual / Predicted | Negative | Positive |
 |---|---:|---:|
-| Negative | 101 | 4 |
-| Positive | 8 | 87 |
+| Negative | 289 | 13 |
+| Positive | 30 | 268 |
 
-The model correctly classified 188 of the 200 test reviews. The final test accuracy was 94%, with a macro-F1 score of approximately 0.9397.
+The model correctly classified 557 of the 600 test reviews. The final test accuracy was 92.8%, with a macro-F1 score of approximately 0.9282. A 95% confidence interval for the accuracy is roughly 90.8% to 94.9%. The model misses positive reviews (30) more often than negative ones (13), which is consistent with treating 3-star reviews as negative.
 
 ### Reproduce the Test Evaluation
 
@@ -190,7 +205,7 @@ After preparing the data and saving the model locally, run:
 python -m src.evaluate_bert
 ```
 
-The evaluation script runs inference on the held-out test split and saves the predictions under `data/predictions/`.
+The evaluation script runs inference on the held-out test split and saves `bert_test.csv` (predictions) and `bert_test_metrics.json` (accuracy, macro-F1 and confusion matrix) under `data/predictions/`. The test split should be evaluated once, with the final configuration.
 
 ## API Usage
 
@@ -250,7 +265,8 @@ ReviewPulse/
 │   ├── sample/          # Small test fixtures, if included
 │   ├── processed/       # Generated dataset splits
 │   └── predictions/     # Generated evaluation predictions
-├── docs/                # Supporting documentation and data report
+├── docs/                # Data report and MLflow run summaries
+├── notebooks/           # Kaggle candidate-selection notebook and its MLflow database
 ├── models/              # Locally saved model weights
 ├── src/
 │   ├── app.py
@@ -259,7 +275,6 @@ ReviewPulse/
 │   ├── train_bert.py
 │   ├── evaluate_bert.py
 │   ├── bert_model.py
-│   └── log_bert_runs.py
 ├── tests/
 ├── README.md
 ├── CONTRIBUTION.md
@@ -288,8 +303,6 @@ python -m pytest -v
 ```
 
 The tests cover data preparation, shared utilities, the BERT model adapter, and the FastAPI endpoints.
-
-The candidate runs were logged by the Kaggle notebook with MLflow 3.18.0. The project pins MLflow 2.19.0, which cannot read that database, so notebooks/convert_kaggle_runs_db.py copied the runs into mlflow.db. The original is kept in notebooks/kaggle_mlflow.db.
 
 ## Additional Documentation
 

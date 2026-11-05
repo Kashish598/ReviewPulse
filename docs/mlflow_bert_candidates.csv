@@ -1,4 +1,0 @@
-run_name,repo,mapper_policy,max_length,truncation,val_accuracy,val_macro_f1
-nlptown_1_to_5,nlptown/bert-base-multilingual-uncased-sentiment,map_stars_to_binary,512,True,0.93,0.9298245614035088
-roberta_sentiment,cardiffnlp/twitter-roberta-base-sentiment,map_roberta_3class,512,True,0.897,0.8969454841611213
-distilbert_sst2,distilbert-base-uncased-finetuned-sst-2-english,map_binary,512,True,0.891,0.8909082538414808

@@ -1,0 +1,17 @@
+{
+    "macro_f1": 0.9282454339899711,
+    "accuracy": 0.9283333333333333,
+    "confusion_matrix": [
+        [
+            289,
+            13
+        ],
+        [
+            30,
+            268
+        ]
+    ],
+    "n": 600,
+    "model": "nlptown-bert-multilingual",
+    "split": "test"
+}
