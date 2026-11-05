@@ -7,7 +7,12 @@ def test_run_is_logged_in_the_tfidf_experiment(tmp_path):
     mlflow = pytest.importorskip("mlflow")
 
     previous_uri = mlflow.get_tracking_uri()
-    mlflow.set_tracking_uri(tmp_path.as_uri())
+    # MLflow 3 no longer accepts a plain folder, so track into a temporary sqlite database
+    # and keep the artifacts in the temporary folder too.
+    mlflow.set_tracking_uri(f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
+    mlflow.create_experiment(
+        MLFLOW_TFIDF_EXPERIMENT, artifact_location=(tmp_path / "artifacts").as_uri()
+    )
     try:
         log_to_mlflow(
             run_name="tfidf_test_run",
