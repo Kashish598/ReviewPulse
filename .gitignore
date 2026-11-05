@@ -11,16 +11,17 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-
 # Models and tracking: weights are not committed, see README
 models/*
 !models/.gitkeep
 mlruns/
 mlartifacts/
-
 # Secrets and local files
 .env
 *.key
 .DS_Store
 .idea/
 .vscode/
+# Local MLflow databases
+*.db
+!notebooks/kaggle_mlflow.db
