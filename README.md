@@ -142,7 +142,7 @@ The model is used without additional fine-tuning in this milestone.
 
 ### MLflow Tracking
 
-The candidate-model validation results and associated parameters are recorded in the `reviewpulse-bert` MLflow experiment.
+The candidate-model validation results and associated parameters are recorded in the `reviewpulse-bert-candidates` MLflow experiment. Candidate runs come from notebooks/bert_candidate_selection.ipynb (Kaggle GPU) and are listed in docs/mlflow_bert_candidates.csv
 
 The tracking workflow records information such as the model checkpoint, label mapping, truncation configuration, maximum sequence length, and evaluation metrics.
 
@@ -288,6 +288,8 @@ python -m pytest -v
 ```
 
 The tests cover data preparation, shared utilities, the BERT model adapter, and the FastAPI endpoints.
+
+The candidate runs were logged by the Kaggle notebook with MLflow 3.18.0. The project pins MLflow 2.19.0, which cannot read that database, so notebooks/convert_kaggle_runs_db.py copied the runs into mlflow.db. The original is kept in notebooks/kaggle_mlflow.db.
 
 ## Additional Documentation
 
