@@ -1,0 +1,17 @@
+{
+    "macro_f1": 0.8682890638242298,
+    "accuracy": 0.8683333333333333,
+    "confusion_matrix": [
+        [
+            266,
+            36
+        ],
+        [
+            43,
+            255
+        ]
+    ],
+    "n": 600,
+    "model": "tfidf-linear_svc",
+    "split": "test"
+}
