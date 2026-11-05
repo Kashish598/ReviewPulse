@@ -265,7 +265,7 @@ ReviewPulse/
 │   ├── sample/          # Small test fixtures, if included
 │   ├── processed/       # Generated dataset splits
 │   └── predictions/     # Generated evaluation predictions
-├── docs/                # Data report and MLflow run summaries
+├── docs/                # data_report.json and mlflow_runs_summary.csv
 ├── notebooks/           # Kaggle candidate-selection notebook and its MLflow database
 ├── models/              # Locally saved model weights
 ├── src/
