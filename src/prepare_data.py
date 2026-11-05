@@ -29,8 +29,8 @@ from src.common import (
 
 N_TRAIN = 10_000
 N_VALIDATION = 1_000
-N_TEST = 200
-FIXTURE_SIZES = {"train": 10000, "validation": 1000, "test": 200}
+N_TEST = 600
+FIXTURE_SIZES = {"train": 10000, "validation": 1000, "test": 600}
 
 
 # --------------------------------------------------------------- loading
