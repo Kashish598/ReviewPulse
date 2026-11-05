@@ -19,22 +19,22 @@
   },
   "test_rows_removed_for_overlap_with_train": 970,
   "final_sizes": {
-    "train": 40000,
-    "validation": 10000,
-    "test": 10000
+    "train": 10000,
+    "validation": 1000,
+    "test": 200
   },
   "label_counts": {
     "train": {
-      "0": 19908,
-      "1": 20092
+      "0": 4895,
+      "1": 5105
     },
     "validation": {
-      "0": 5021,
-      "1": 4979
+      "0": 509,
+      "1": 491
     },
     "test": {
-      "0": 4966,
-      "1": 5034
+      "0": 105,
+      "1": 95
     }
   },
   "dataset_revision": "9d9c45c18f8c3cf1b23a3c27917b60cbf28f3289"
