@@ -1,0 +1,41 @@
+{
+  "dataset": "fancyzhx/amazon_polarity",
+  "seed": 42,
+  "sampling": "plain random sampling, no stratification, duplicates removed before sampling",
+  "input_column": "content (title is not used)",
+  "official_train_cleaning": {
+    "original_rows": 3600000,
+    "missing_removed": 0,
+    "empty_removed": 0,
+    "duplicates_removed": 5217,
+    "rows_after_cleaning": 3594783
+  },
+  "official_test_cleaning": {
+    "original_rows": 400000,
+    "missing_removed": 0,
+    "empty_removed": 0,
+    "duplicates_removed": 83,
+    "rows_after_cleaning": 399917
+  },
+  "test_rows_removed_for_overlap_with_train": 970,
+  "final_sizes": {
+    "train": 40000,
+    "validation": 10000,
+    "test": 10000
+  },
+  "label_counts": {
+    "train": {
+      "0": 19908,
+      "1": 20092
+    },
+    "validation": {
+      "0": 5021,
+      "1": 4979
+    },
+    "test": {
+      "0": 4966,
+      "1": 5034
+    }
+  },
+  "dataset_revision": "9d9c45c18f8c3cf1b23a3c27917b60cbf28f3289"
+}
