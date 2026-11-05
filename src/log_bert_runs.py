@@ -1,5 +1,6 @@
 import mlflow
 
+
 def log_candidate(run_name, checkpoint, mapping, acc, f1, is_selected=False):
     with mlflow.start_run(run_name=run_name):
         # Log parameters[cite: 4]
