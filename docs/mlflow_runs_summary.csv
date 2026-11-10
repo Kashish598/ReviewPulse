@@ -1,4 +1,5 @@
-run_id,status,start_time,metrics.val_macro_f1,metrics.val_accuracy,params.repo,params.truncation,params.max_length,params.mapper_policy,tags.mlflow.runName,tags.source
-60bc352ec2ca401cb69caff466ba3a05,FINISHED,2026-11-05 22:23:32.049000+00:00,0.8969454841611213,0.897,cardiffnlp/twitter-roberta-base-sentiment,True,512,map_roberta_3class,roberta_sentiment,kaggle_mlflow_db
-628ee399422848ed968ffe50283bf7eb,FINISHED,2026-11-05 22:23:31.969000+00:00,0.8909082538414808,0.891,distilbert-base-uncased-finetuned-sst-2-english,True,512,map_binary,distilbert_sst2,kaggle_mlflow_db
-43d9ae39a99540ceb652e7312729bd1f,FINISHED,2026-11-05 22:23:31.871000+00:00,0.9298245614035088,0.93,nlptown/bert-base-multilingual-uncased-sentiment,True,512,map_stars_to_binary,nlptown_1_to_5,kaggle_mlflow_db
+run_id,status,start_time,metrics.val_accuracy,metrics.val_macro_f1,params.label_mapping,params.max_token_length,params.fine_tuned,params.model_name,params.repo,params.max_length,params.truncation,params.mapper_policy,tags.mlflow.runName,tags.source
+e1cfe5b531aa4c5fbf85bf022b4bd188,FINISHED,2026-11-06 02:17:53.387000+00:00,,,"1-3 stars -> negative, 4-5 stars -> positive",512,False,nlptown/bert-base-multilingual-uncased-sentiment,,,,,save_best_pretrained,
+7e4b182c52b34df299a332eb6eae3f8d,FINISHED,2026-11-06 02:17:02.710000+00:00,0.897,0.8969454841611213,,,,,cardiffnlp/twitter-roberta-base-sentiment,512,True,map_roberta_3class,roberta_sentiment,kaggle_mlflow_db
+aea76b41fb4d41c581e847eae40ba534,FINISHED,2026-11-06 02:17:02.606000+00:00,0.891,0.8909082538414808,,,,,distilbert-base-uncased-finetuned-sst-2-english,512,True,map_binary,distilbert_sst2,kaggle_mlflow_db
+94333e97e5ab40b4bd1f42107879d16e,FINISHED,2026-11-06 02:17:02.421000+00:00,0.93,0.9298245614035088,,,,,nlptown/bert-base-multilingual-uncased-sentiment,512,True,map_stars_to_binary,nlptown_1_to_5,kaggle_mlflow_db
