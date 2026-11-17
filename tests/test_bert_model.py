@@ -1,6 +1,14 @@
+import json
+
 import pytest
 
-from src.bert_model import BertPredictor
+from src.bert_model import (
+    FINETUNED_DIR_NAME,
+    MODEL_DIR_ENV,
+    PRETRAINED_DIR_NAME,
+    BertPredictor,
+    resolve_model_dir,
+)
 from src.common import Prediction
 
 
@@ -28,6 +36,7 @@ def predictor(tmp_path, monkeypatch):
 
 def test_model_initialization(predictor):
     assert predictor.name == "nlptown-bert-multilingual"
+    assert predictor.fine_tuned is False
 
 
 @pytest.mark.parametrize(
@@ -71,3 +80,65 @@ def test_missing_model_directory(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         BertPredictor(missing_path)
+
+
+@pytest.fixture
+def fake_pipeline(monkeypatch):
+    monkeypatch.setattr("src.bert_model.pipeline", lambda *args, **kwargs: None)
+
+
+def test_metadata_marks_a_fine_tuned_model(tmp_path, fake_pipeline):
+    (tmp_path / "metadata.json").write_text(json.dumps({"fine_tuned": True, "seed": 43}))
+
+    predictor = BertPredictor(tmp_path)
+
+    assert predictor.fine_tuned is True
+    assert predictor.name == "nlptown-bert-finetuned"
+    assert predictor.metadata["seed"] == 43
+
+
+def test_metadata_for_the_pretrained_model(tmp_path, fake_pipeline):
+    (tmp_path / "metadata.json").write_text(json.dumps({"fine_tuned": False}))
+
+    predictor = BertPredictor(tmp_path)
+
+    assert predictor.fine_tuned is False
+    assert predictor.name == "nlptown-bert-multilingual"
+
+
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", ""])
+def test_unreadable_metadata_is_ignored(tmp_path, fake_pipeline, content):
+    (tmp_path / "metadata.json").write_text(content)
+
+    predictor = BertPredictor(tmp_path)
+
+    assert predictor.metadata == {}
+    assert predictor.fine_tuned is False
+
+
+def test_resolve_prefers_the_fine_tuned_model(tmp_path, monkeypatch):
+    monkeypatch.delenv(MODEL_DIR_ENV, raising=False)
+    (tmp_path / FINETUNED_DIR_NAME).mkdir()
+    (tmp_path / PRETRAINED_DIR_NAME).mkdir()
+
+    assert resolve_model_dir(tmp_path) == tmp_path / FINETUNED_DIR_NAME
+
+
+def test_resolve_falls_back_to_the_pretrained_model(tmp_path, monkeypatch):
+    monkeypatch.delenv(MODEL_DIR_ENV, raising=False)
+    (tmp_path / PRETRAINED_DIR_NAME).mkdir()
+
+    assert resolve_model_dir(tmp_path) == tmp_path / PRETRAINED_DIR_NAME
+
+
+def test_resolve_uses_the_environment_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv(MODEL_DIR_ENV, str(tmp_path / "custom"))
+    (tmp_path / FINETUNED_DIR_NAME).mkdir()
+
+    assert resolve_model_dir(tmp_path) == tmp_path / "custom"
+
+
+def test_resolve_explicit_override_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv(MODEL_DIR_ENV, str(tmp_path / "from_env"))
+
+    assert resolve_model_dir(tmp_path, override=tmp_path / "explicit") == tmp_path / "explicit"

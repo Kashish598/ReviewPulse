@@ -1,4 +1,7 @@
-"""FastAPI service skeleton. Runs on MockPredictor until the BERT adapter is merged.
+"""FastAPI service. Serves the fine-tuned BERT model when it is present, else the pretrained one.
+
+Model folder: `models/nlptown_finetuned_v2/` if it exists, otherwise `models/nlptown_sentiment/`;
+set REVIEWPULSE_MODEL_DIR to serve a different folder. GET /health says which model is loaded.
 
 Run:  uvicorn src.app:app --reload     then open http://127.0.0.1:8000/docs
 """
@@ -36,9 +39,9 @@ class PredictResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_predictor() -> Predictor:
-    from src.bert_model import BertPredictor
+    from src.bert_model import BertPredictor, resolve_model_dir
 
-    model_path = MODELS_DIR / "nlptown_sentiment"
+    model_path = resolve_model_dir(MODELS_DIR)
     logger.info("Loading sentiment model from %s", model_path)
 
     return BertPredictor(model_path)
@@ -49,7 +52,10 @@ app = FastAPI(title="ReviewPulse", version="0.1.0")
 
 @app.get("/health")
 def health(predictor: Annotated[Predictor, Depends(get_predictor)]) -> dict:
-    return {"status": "ok", "model": getattr(predictor, "name", type(predictor).__name__)}
+    info = {"status": "ok", "model": getattr(predictor, "name", type(predictor).__name__)}
+    if hasattr(predictor, "fine_tuned"):
+        info["fine_tuned"] = bool(predictor.fine_tuned)
+    return info
 
 
 @app.post("/predict", response_model=PredictResponse)
