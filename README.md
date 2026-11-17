@@ -25,7 +25,7 @@ flowchart LR
     M --> N[Fine-tuned nlptown model]
 ```
 
-The API serves a saved BERT model. Model selection is based on validation-set performance. The held-out test set is reserved for final evaluation. Fine-tuning runs on a GPU (Kaggle); everything else runs on a CPU.
+The API serves the fine-tuned BERT model when it is present locally (the pretrained model otherwise). Model selection is based on validation-set performance. The held-out test set is reserved for final evaluation. Fine-tuning runs on a GPU (Kaggle); everything else runs on a CPU.
 
 ## Technology Stack
 
@@ -223,6 +223,8 @@ After preparing the data and saving the model locally, run:
 python -m src.evaluate_bert
 ```
 
+This scores the pretrained model in `models/nlptown_sentiment/`; it is the baseline that the fine-tuned model is compared with. The fine-tuned model's test predictions come from `src/finetune_scaling.py` (see Fine-Tuning).
+
 The evaluation script runs inference on the held-out test split and saves `bert_test.csv` (predictions) and `bert_test_metrics.json` (accuracy, macro-F1 and confusion matrix) under `data/predictions/`. The test split should be evaluated once, with the final configuration.
 
 ## TF-IDF Baseline
@@ -320,7 +322,15 @@ This p-value is for the best of nine runs, so it is optimistic; the mean over se
 
 Outputs: `models/nlptown_finetuned_v2/` (weights, tokenizer, `metadata.json`), `data/predictions/bert_finetuned_v2_test.csv`, `data/predictions/bert_finetuned_v2_test_metrics.json`, and `data/predictions/scaling/` (per-run predictions and probabilities, `runs_table.csv`, `by_size.csv`, `report.json`). Model weights are not committed.
 
-The API currently loads the pretrained model from `models/nlptown_sentiment/`. The fine-tuned model is saved in the same Hugging Face format; serving it means pointing the BERT adapter's model directory at `models/nlptown_finetuned_v2/`.
+**Serving it.** The API serves the fine-tuned model when `models/nlptown_finetuned_v2/` exists, and otherwise falls back to the pretrained model in `models/nlptown_sentiment/` (with a warning in the log). The Kaggle run saves the model as `nlptown_finetuned_v2.zip`; unzip it so the folder looks like this, then start the API as usual:
+
+```text
+models/nlptown_finetuned_v2/
+├── config.json, model.safetensors (or pytorch_model.bin), tokenizer files
+└── metadata.json
+```
+
+`GET /health` shows which model was loaded (`"model": "nlptown-bert-finetuned", "fine_tuned": true`). To serve a different folder, set `REVIEWPULSE_MODEL_DIR` before starting the API. Model weights are not committed, so every teammate unzips the file locally.
 
 ## API Usage
 
@@ -336,7 +346,7 @@ python -m uvicorn src.app:app --reload
 GET /health
 ```
 
-Returns the API status and the name of the model being served.
+Returns the API status, the name of the model being served and whether it is fine-tuned.
 
 ### Sentiment Prediction
 
