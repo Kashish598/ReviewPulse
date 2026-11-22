@@ -65,6 +65,8 @@ class BertPredictor:
             truncation=True,
             max_length=512,
         )
+        logger.info("Loaded %s from %s (fine_tuned=%s)", self.name, model_path, self.fine_tuned)
+        logger.debug("Model metadata: %s", self.metadata)
 
     @staticmethod
     def _read_metadata(model_path: Path) -> dict:
@@ -95,6 +97,7 @@ class BertPredictor:
         if not texts:
             return []
 
+        logger.debug("BERT predict: %d text(s), lengths %s", len(texts), [len(t) for t in texts])
         raw_predictions = self.classifier(
             texts,
             batch_size=32,
@@ -108,10 +111,13 @@ class BertPredictor:
                 f"for {len(texts)} input texts."
             )
 
-        return [
+        logger.debug("BERT raw output: %s", raw_predictions)
+        predictions = [
             Prediction(
                 label=self.map_stars_to_label(result["label"]),
                 score=float(result["score"]),
             )
             for result in raw_predictions
         ]
+        logger.debug("BERT mapped output: %s", predictions)
+        return predictions

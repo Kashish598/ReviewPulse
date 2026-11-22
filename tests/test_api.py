@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -77,3 +79,36 @@ def test_health_reports_whether_the_model_is_fine_tuned():
         app.dependency_overrides.clear()
 
     assert body == {"status": "ok", "model": "nlptown-bert-finetuned", "fine_tuned": True}
+
+
+def test_unhandled_error_returns_500_logs_the_traceback_and_the_server_keeps_working(caplog):
+    class BrokenPredictor:
+        name = "broken"
+
+        def predict(self, texts):
+            raise RuntimeError("model exploded")
+
+    app.dependency_overrides[get_predictor] = BrokenPredictor
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            with caplog.at_level(logging.ERROR, logger="src.app"):
+                broken = test_client.post("/predict", json={"text": "fine review"})
+            app.dependency_overrides[get_predictor] = MockPredictor
+            healthy = test_client.post("/predict", json={"text": "fine review"})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert broken.status_code == 500
+    assert broken.json() == {"detail": "Internal server error"}
+    logged = [r for r in caplog.records if "Unhandled error" in r.getMessage()]
+    assert logged and logged[0].exc_info and "model exploded" in str(logged[0].exc_info[1])
+    assert healthy.status_code == 200
+
+
+def test_predict_logs_what_it_received_and_returned_at_debug(client, caplog):
+    with caplog.at_level(logging.DEBUG, logger="src.app"):
+        client.post("/predict", json={"text": "I love this, it is great"})
+
+    messages = [r.getMessage() for r in caplog.records if r.name == "src.app"]
+    assert any("received 24 chars" in m and "I love this" in m for m in messages)
+    assert any("model=mock-keyword label=positive" in m for m in messages)
