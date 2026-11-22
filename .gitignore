@@ -18,6 +18,7 @@ mlruns/
 mlartifacts/
 # Secrets and local files
 .env
+logs/
 *.key
 .DS_Store
 .idea/

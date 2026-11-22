@@ -4,18 +4,24 @@ Model folder: `models/nlptown_finetuned_v2/` if it exists, otherwise `models/nlp
 set REVIEWPULSE_MODEL_DIR to serve a different folder. GET /health says which model is loaded.
 
 Run:  uvicorn src.app:app --reload     then open http://127.0.0.1:8000/docs
+
+Logs go to logs/reviewpulse.log and the console (see src/logging_config.py). Set LOG_LEVEL=DEBUG
+to also log what each request carried and what the model returned.
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from src.common import MODELS_DIR, Predictor
+from src.logging_config import setup_logging
 
 MAX_TEXT_CHARS = 5000
 logger = logging.getLogger(__name__)
@@ -47,7 +53,22 @@ def get_predictor() -> Predictor:
     return BertPredictor(model_path)
 
 
-app = FastAPI(title="ReviewPulse", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    log_file = setup_logging()
+    logger.info("ReviewPulse API starting, log file: %s", log_file)
+    yield
+    logger.info("ReviewPulse API shutting down")
+
+
+app = FastAPI(title="ReviewPulse", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def log_unhandled_error(request: Request, error: Exception) -> JSONResponse:
+    """Log the full traceback, answer with a generic 500, and keep the server running."""
+    logger.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=error)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.get("/health")
@@ -60,5 +81,12 @@ def health(predictor: Annotated[Predictor, Depends(get_predictor)]) -> dict:
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest, predictor: Annotated[Predictor, Depends(get_predictor)]):
+    logger.debug("predict: received %d chars: %r", len(request.text), request.text[:200])
     result = predictor.predict([request.text])[0]
+    logger.debug(
+        "predict: model=%s label=%s score=%s",
+        getattr(predictor, "name", type(predictor).__name__),
+        result.label,
+        result.score,
+    )
     return PredictResponse(sentiment=result.label, score=result.score)

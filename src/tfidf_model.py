@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import joblib
 
 from src.common import ID_TO_LABEL, Prediction
+
+logger = logging.getLogger(__name__)
 
 MODEL_FILE = "model.joblib"
 
@@ -36,11 +39,13 @@ class TfidfPredictor:
 
         self.pipeline = joblib.load(model_path)
         self.name = _read_name(model_dir)
+        logger.info("Loaded %s from %s", self.name, model_path)
 
     def predict(self, texts: list[str]) -> list[Prediction]:
         if not texts:
             return []
 
+        logger.debug("TF-IDF predict: %d text(s), lengths %s", len(texts), [len(t) for t in texts])
         probabilities = self.pipeline.predict_proba(texts)
         classes = [int(c) for c in self.pipeline.classes_]
 
@@ -49,4 +54,5 @@ class TfidfPredictor:
             best = int(row.argmax())
             # The score is the model's probability for the predicted label.
             predictions.append(Prediction(label=ID_TO_LABEL[classes[best]], score=float(row[best])))
+        logger.debug("TF-IDF output: %s", predictions)
         return predictions
