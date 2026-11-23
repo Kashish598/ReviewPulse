@@ -168,6 +168,51 @@ def test_discarding_keeps_the_rejected_answer_but_not_all_of_it(store):
     assert len(saved["llm_raw"]) == RAW_CHARS
 
 
+def test_a_failed_attempt_is_counted_and_keeps_the_request_pending(store):
+    request_id = add(store)
+
+    assert store.record_attempt(request_id, "neutral " * 100) == 1
+    assert store.record_attempt(request_id, "still no label") == 2
+
+    saved = row(store, request_id)
+    assert saved["label_status"] == PENDING
+    assert saved["label_attempts"] == 2
+    assert saved["llm_raw"] == "still no label"
+    assert saved["last_attempt_at"] is not None
+
+
+def test_a_long_rejected_answer_is_cut_when_an_attempt_is_recorded(store):
+    request_id = add(store)
+
+    store.record_attempt(request_id, "x" * 1000)
+
+    assert len(row(store, request_id)["llm_raw"]) == RAW_CHARS
+
+
+def test_recording_an_attempt_on_a_finished_request_does_nothing(store):
+    request_id = add(store)
+    store.mark_labelled(request_id, "positive", "m", "v1")
+
+    assert store.record_attempt(request_id, "late") == 0
+    assert row(store, request_id)["label_attempts"] == 1
+
+
+def test_discarding_after_a_recorded_attempt_does_not_count_it_twice(store):
+    request_id = add(store)
+    store.record_attempt(request_id, "neutral")
+
+    store.mark_discarded(request_id, "neutral", "m", "v1", count_attempt=False)
+
+    assert row(store, request_id)["label_attempts"] == 1
+
+
+def test_requests_that_already_failed_are_claimed_after_fresh_ones(store):
+    first, second = add(store, "one"), add(store, "two")
+    store.record_attempt(first, "neutral")
+
+    assert [r["id"] for r in store.claim_pending(10)] == [second, first]
+
+
 def test_counts_include_every_status_even_when_empty(store):
     first, second = add(store, "one"), add(store, "two")
     add(store, "three")

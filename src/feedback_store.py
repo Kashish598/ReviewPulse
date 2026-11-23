@@ -218,7 +218,7 @@ class FeedbackStore:
     # ------------------------------------------------------------ labelling
 
     def claim_pending(self, limit: int = 10) -> list[dict]:
-        """The oldest requests still waiting for a label."""
+        """The oldest requests still waiting for a label (those never tried come first)."""
         stmt = (
             select(
                 requests_table.c.id,
@@ -228,7 +228,9 @@ class FeedbackStore:
                 requests_table.c.model_name,
             )
             .where(requests_table.c.label_status == PENDING)
-            .order_by(requests_table.c.id)
+            # Requests that already failed once go behind fresh ones, so one bad request
+            # can never hold up everything behind it.
+            .order_by(requests_table.c.label_attempts, requests_table.c.id)
             .limit(limit)
         )
         with self.engine.connect() as connection:
@@ -258,17 +260,48 @@ class FeedbackStore:
         )
 
     def mark_discarded(
-        self, request_id: int, reason: str, llm_model: str, prompt_version: str
+        self,
+        request_id: int,
+        reason: str,
+        llm_model: str,
+        prompt_version: str,
+        count_attempt: bool = True,
     ) -> bool:
-        """Give up on a request (the LLM answer was not a valid label). Keeps what it said."""
-        return self._finish(
-            request_id,
-            label_status=DISCARDED,
-            llm_raw=reason[:RAW_CHARS],
-            llm_model=llm_model,
-            prompt_version=prompt_version,
-            label_attempts=requests_table.c.label_attempts + 1,
+        """Give up on a request. Keeps what the LLM said. Set count_attempt=False when the
+        failed attempt was already counted with record_attempt()."""
+        values = {
+            "label_status": DISCARDED,
+            "llm_raw": reason[:RAW_CHARS],
+            "llm_model": llm_model,
+            "prompt_version": prompt_version,
+        }
+        if count_attempt:
+            values["label_attempts"] = requests_table.c.label_attempts + 1
+        return self._finish(request_id, **values)
+
+    def record_attempt(self, request_id: int, note: str | None = None) -> int:
+        """Count a failed labelling attempt and keep what the LLM said (first 200 characters).
+
+        The request stays pending. Returns the new number of attempts, or 0 when the request
+        is not pending any more.
+        """
+        stmt = (
+            update(requests_table)
+            .where(requests_table.c.id == request_id)
+            .where(requests_table.c.label_status == PENDING)
+            .values(
+                label_attempts=requests_table.c.label_attempts + 1,
+                last_attempt_at=self._clock(),
+                llm_raw=(note or "")[:RAW_CHARS] or None,
+            )
         )
+        with self.engine.begin() as connection:
+            if connection.execute(stmt).rowcount != 1:
+                return 0
+            attempts = select(requests_table.c.label_attempts).where(
+                requests_table.c.id == request_id
+            )
+            return int(connection.execute(attempts).scalar() or 0)
 
     # ------------------------------------------------------------ daily usage
 

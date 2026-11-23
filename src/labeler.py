@@ -1,8 +1,8 @@
 """LLM labeller: gives the saved requests a sentiment label so they can be used to retrain.
 
-A background thread takes the oldest pending request from the store, asks the LLM (Groq,
-llama-3.1-8b-instant by default) for exactly one word, and keeps the answer only if it is
-exactly `negative` or `positive`. Anything else is discarded and logged, never guessed at.
+A background thread takes pending requests from the store, asks the LLM (Groq, openai/gpt-oss-20b
+by default) for exactly one word, and keeps the answer only if it is exactly `negative` or
+`positive`. Anything else is never guessed at.
 
 Rules it follows
   * temperature 0, one word, the review is wrapped in tags and marked as data, not instructions
@@ -10,7 +10,12 @@ Rules it follows
   * one call at most every LABEL_MIN_INTERVAL_SECONDS, because Groq's tokens-per-minute limit
     binds long before its request limit
   * on HTTP 429 or a network error the request stays pending and the labeller waits
-  * on 401/403 it stops, instead of hammering the API with a bad key
+  * on 401/403 (bad key) or 404 (model not found or shut down) it STOPS and says why, instead of
+    hammering the API; the saved requests stay pending
+  * an answer that is not a label, or a request the API refuses, is counted as a failed attempt
+    and the request stays pending. It is discarded only on its second failure, and only once the
+    labeller has seen at least one good answer, so a wrong setting can never throw data away
+  * after MAX_BAD_IN_A_ROW unusable answers in a row it stops (the setting is wrong, not the data)
   * model name and prompt version are saved with every label and appear in the logs; the
     prompt version must change whenever the prompt changes, because labels depend on it
   * every disagreement between the served model and the LLM is logged
@@ -18,8 +23,13 @@ Rules it follows
 The labels are LLM opinions, not ground truth. scripts/eval_labeler.py measures how well
 they match the 600 human-labelled test reviews before anyone trusts them.
 
+Groq retires models. llama-3.1-8b-instant was shut down on 2026-08-16 (Groq recommends
+openai/gpt-oss-20b), and a retired model answers HTTP 404. Check Groq's deprecations page
+before relying on LABEL_MODEL.
+
 Environment: GROQ_API_KEY (the labeller is off without it), LABEL_MODEL, LABEL_DAILY_CAP (200),
-LABEL_MIN_INTERVAL_SECONDS (4), LABEL_POLL_SECONDS (360), LABEL_ENABLED (true).
+LABEL_MIN_INTERVAL_SECONDS (6), LABEL_POLL_SECONDS (360), LABEL_MAX_TOKENS (512),
+LABEL_REASONING_EFFORT (low), LABEL_ENABLED (true).
 """
 
 from __future__ import annotations
@@ -40,10 +50,14 @@ from src.feedback_store import FeedbackStore, get_store
 logger = logging.getLogger("reviewpulse.labeler")
 
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_MODEL = "openai/gpt-oss-20b"
+RETIRED_MODELS = {"llama-3.1-8b-instant", "llama-3.3-70b-versatile"}  # shut down 2026-08-16
+REASONING_MODEL_PREFIX = "openai/gpt-oss"  # these accept (and need) reasoning_effort
 PROMPT_VERSION = "v1"  # change this whenever SYSTEM_PROMPT or the message format changes
 MAX_LABEL_CHARS = 1500  # reviews are ~400 characters on average, this only trims outliers
-MAX_ANSWER_TOKENS = 8
+# A reasoning model spends part of this budget thinking before it writes its one word.
+DEFAULT_MAX_TOKENS = 512
+DEFAULT_REASONING_EFFORT = "low"
 USER_AGENT = "reviewpulse-labeler/1.0"  # Groq sits behind Cloudflare, which rejects urllib's own
 
 SYSTEM_PROMPT = (
@@ -55,10 +69,12 @@ SYSTEM_PROMPT = (
 )
 
 DEFAULT_DAILY_CAP = 200
-DEFAULT_MIN_INTERVAL = 4.0
+DEFAULT_MIN_INTERVAL = 6.0
 DEFAULT_POLL_SECONDS = 360.0  # long on purpose, so an idle database (Neon) can suspend
 DEFAULT_BACKOFF = 30.0
 MAX_BACKOFF = 600.0
+MAX_ATTEMPTS = 2  # a request is discarded on its second failed attempt
+MAX_BAD_IN_A_ROW = 4
 
 
 # ----------------------------------------------------------------------------- prompt
@@ -98,17 +114,22 @@ class TransientError(LabelerError):
 
 
 class PermanentError(LabelerError):
-    """The API refused this particular request, so retrying the same text will not help."""
+    """The API refused this particular request. Retrying once more may be worth it, no more."""
 
 
 class AuthError(LabelerError):
     """The key is missing, wrong or not allowed. Stop instead of retrying."""
 
 
+class ConfigError(LabelerError):
+    """The model or the URL does not exist (HTTP 404). Every request would fail, so stop."""
+
+
 @dataclass(frozen=True)
 class LLMResult:
     raw: str
     tokens: int
+    finish_reason: str | None = None
 
 
 Transport = Callable[[str, dict, bytes, float], "tuple[int, Mapping[str, str], bytes]"]
@@ -125,6 +146,18 @@ def urllib_post(url: str, headers: dict, body: bytes, timeout: float):
         raise TransientError(f"network error: {error}") from error
 
 
+def error_detail(body: bytes, secret: str = "") -> str:
+    """The API's own explanation of an error (code and message), for the logs. Never the key."""
+    try:
+        error = json.loads(body.decode("utf-8", "replace")).get("error") or {}
+        text = " ".join(str(part) for part in (error.get("code"), error.get("message")) if part)
+    except (ValueError, AttributeError):
+        return ""
+    if secret:
+        text = text.replace(secret, "***")
+    return f": {text[:200]}" if text else ""
+
+
 class GroqClient:
     def __init__(
         self,
@@ -133,12 +166,16 @@ class GroqClient:
         *,
         url: str = API_URL,
         timeout: float = 20.0,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        reasoning_effort: str | None = DEFAULT_REASONING_EFFORT,
         transport: Transport = urllib_post,
     ):
         self._api_key = api_key
         self.model = model
         self.url = url
         self.timeout = timeout
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self._transport = transport
 
     def __repr__(self) -> str:
@@ -149,8 +186,10 @@ class GroqClient:
             "model": self.model,
             "messages": build_messages(text),
             "temperature": 0,
-            "max_tokens": MAX_ANSWER_TOKENS,
+            "max_completion_tokens": self.max_tokens,
         }
+        if self.reasoning_effort and self.model.startswith(REASONING_MODEL_PREFIX):
+            payload["reasoning_effort"] = self.reasoning_effort
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -165,22 +204,30 @@ class GroqClient:
         if status == 200:
             try:
                 data = json.loads(body.decode("utf-8"))
-                content = data["choices"][0]["message"]["content"] or ""
+                choice = data["choices"][0]
+                content = choice["message"]["content"] or ""
+                finish = choice.get("finish_reason")
                 tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
             except (ValueError, KeyError, IndexError, TypeError) as error:
                 raise TransientError(f"unreadable response: {error}") from error
-            return LLMResult(raw=content, tokens=tokens)
+            return LLMResult(raw=content, tokens=tokens, finish_reason=finish)
+
+        detail = error_detail(body, self._api_key)
         if status == 429:
             try:
                 wait = float(lowered.get("retry-after", DEFAULT_BACKOFF))
             except ValueError:
                 wait = DEFAULT_BACKOFF
             raise RateLimitError(wait)
-        if status in (401, 403):
-            raise AuthError(f"the API refused the key (HTTP {status})")
+        if status == 401:
+            raise AuthError(f"the API refused the key (HTTP 401{detail})")
+        if status == 403:
+            raise AuthError(f"the API refused the request (HTTP 403{detail})")
+        if status == 404:
+            raise ConfigError(f"the model or URL was not found (HTTP 404{detail})")
         if status == 408 or status >= 500:
-            raise TransientError(f"HTTP {status}")
-        raise PermanentError(f"HTTP {status}")
+            raise TransientError(f"HTTP {status}{detail}")
+        raise PermanentError(f"HTTP {status}{detail}")
 
 
 # ----------------------------------------------------------------------------- labeller
@@ -190,6 +237,7 @@ class GroqClient:
 class RunSummary:
     labelled: int = 0
     discarded: int = 0
+    rejected: int = 0  # failed attempts, the request stays pending for another try
     cap_reached: bool = False
     waiting: bool = False  # backing off after a rate limit or an outage
     stopped: str | None = None
@@ -221,6 +269,8 @@ class Labeler:
         self._last_call: float | None = None
         self._not_before = 0.0
         self._failures = 0
+        self._bad_in_a_row = 0
+        self._succeeded_once = False
         self._cap_logged_day: str | None = None
         self._since_summary = 0
         self._thread: threading.Thread | None = None
@@ -233,6 +283,15 @@ class Labeler:
             if wait > 0:
                 self._sleep(wait)
         self._last_call = self._clock()
+
+    def _stop(self, reason: str, summary: RunSummary) -> None:
+        self.stopped_reason = reason
+        summary.stopped = reason
+        logger.error(
+            "Labeller stopped: %s. Check GROQ_API_KEY, LABEL_MODEL and your Groq account. "
+            "The saved requests stay pending.",
+            reason,
+        )
 
     def run_once(self, batch_size: int = 10) -> RunSummary:
         """Label up to `batch_size` pending requests. Safe to call again and again."""
@@ -273,37 +332,33 @@ class Labeler:
             delay = min(DEFAULT_BACKOFF * 2 ** (self._failures - 1), MAX_BACKOFF)
             self._back_off(delay, summary, f"the API is unreachable ({error})")
             return False
-        except AuthError as error:
-            self.stopped_reason = str(error)
-            summary.stopped = self.stopped_reason
-            logger.error("Labeller stopped: %s. Check GROQ_API_KEY.", error)
+        except (AuthError, ConfigError) as error:
+            self._stop(str(error), summary)
             return False
         except PermanentError as error:
-            logger.warning("Request %s cannot be labelled (%s), discarding it", request_id, error)
-            self.store.mark_discarded(
-                request_id, f"error: {error}", self.client.model, PROMPT_VERSION
-            )
-            summary.discarded += 1
-            return True
+            logger.warning("The API refused request %s (%s)", request_id, error)
+            return self._reject(row, summary, f"error: {error}")
 
         self._failures = 0
         self.store.record_label_call(result.tokens)
         label = parse_label(result.raw)
         if label is None:
+            hint = " (cut off, raise LABEL_MAX_TOKENS)" if result.finish_reason == "length" else ""
             logger.warning(
-                "The LLM answer for request %s is not a label, discarding it: %r (%s, prompt %s)",
+                "The LLM answer for request %s is not a label%s: %r (%s, prompt %s)",
                 request_id,
+                hint,
                 result.raw[:80],
                 self.client.model,
                 PROMPT_VERSION,
             )
-            self.store.mark_discarded(request_id, result.raw, self.client.model, PROMPT_VERSION)
-            summary.discarded += 1
-            return True
+            return self._reject(row, summary, result.raw or f"(empty, {result.finish_reason})")
 
         if not self.store.mark_labelled(request_id, label, self.client.model, PROMPT_VERSION):
             logger.debug("Request %s was already finished by someone else", request_id)
             return True
+        self._succeeded_once = True
+        self._bad_in_a_row = 0
         summary.labelled += 1
         logger.debug(
             "Labelled request %s as %s (model %s, prompt %s, %d tokens)",
@@ -314,6 +369,26 @@ class Labeler:
             result.tokens,
         )
         self._log_agreement(row, label)
+        return True
+
+    def _reject(self, row: dict, summary: RunSummary, raw: str) -> bool:
+        """A failed attempt. The request is kept, and discarded only on repeated failure."""
+        self._bad_in_a_row += 1
+        attempts = self.store.record_attempt(row["id"], raw)
+        if attempts >= MAX_ATTEMPTS and self._succeeded_once:
+            self.store.mark_discarded(
+                row["id"], raw, self.client.model, PROMPT_VERSION, count_attempt=False
+            )
+            summary.discarded += 1
+            logger.warning("Request %s discarded after %d failed attempts", row["id"], attempts)
+        else:
+            summary.rejected += 1
+        if self._bad_in_a_row >= MAX_BAD_IN_A_ROW:
+            self._stop(
+                f"{self._bad_in_a_row} unusable answers in a row, the last was {raw[:80]!r}",
+                summary,
+            )
+            return False
         return True
 
     def _back_off(self, seconds: float, summary: RunSummary, why: str) -> None:
@@ -405,7 +480,21 @@ class Labeler:
             ),
             **overrides,
         }
-        client = GroqClient(key, (env.get("LABEL_MODEL") or "").strip() or DEFAULT_MODEL)
+        model = (env.get("LABEL_MODEL") or "").strip() or DEFAULT_MODEL
+        if model in RETIRED_MODELS:
+            logger.warning(
+                "LABEL_MODEL %s was shut down by Groq on 2026-08-16, expect HTTP 404. "
+                "Use %s or another current model.",
+                model,
+                DEFAULT_MODEL,
+            )
+        effort = (env.get("LABEL_REASONING_EFFORT") or DEFAULT_REASONING_EFFORT).strip().lower()
+        client = GroqClient(
+            key,
+            model,
+            max_tokens=_env_number(env, "LABEL_MAX_TOKENS", DEFAULT_MAX_TOKENS, int),
+            reasoning_effort=None if effort in {"", "none", "off"} else effort,
+        )
         return cls(store, client, **settings)
 
 
