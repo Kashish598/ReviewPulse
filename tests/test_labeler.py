@@ -11,6 +11,7 @@ from src.feedback_store import FeedbackStore
 from src.labeler import (
     PROMPT_VERSION,
     AuthError,
+    ConfigError,
     GroqClient,
     Labeler,
     LLMResult,
@@ -177,7 +178,8 @@ def test_the_request_is_one_word_at_temperature_zero_with_the_key_in_the_header(
     assert headers["User-Agent"] == labeler.USER_AGENT
     assert payload["model"] == "llama-test"
     assert payload["temperature"] == 0
-    assert payload["max_tokens"] == labeler.MAX_ANSWER_TOKENS
+    assert payload["max_completion_tokens"] == labeler.DEFAULT_MAX_TOKENS
+    assert "reasoning_effort" not in payload  # only sent to models that take it
     assert payload["messages"] == build_messages("Awful")
     assert result == LLMResult(raw="negative", tokens=321)
 
@@ -209,6 +211,7 @@ def test_rate_limit_without_a_usable_header_uses_a_default_wait():
     [
         (401, AuthError),
         (403, AuthError),
+        (404, ConfigError),
         (500, TransientError),
         (503, TransientError),
         (408, TransientError),
@@ -238,6 +241,60 @@ def test_a_missing_answer_comes_back_empty_so_it_gets_discarded_later():
     assert GroqClient(KEY, transport=respond(200, body)).complete("t") == LLMResult("", 0)
 
 
+def test_a_gpt_oss_model_gets_a_low_reasoning_effort_and_room_to_think():
+    transport = respond(200, GOOD_BODY)
+    client = GroqClient(KEY, "openai/gpt-oss-20b", transport=transport)
+
+    client.complete("Awful")
+
+    payload = transport.calls[0][2]
+    assert payload["reasoning_effort"] == "low"
+    assert payload["max_completion_tokens"] == labeler.DEFAULT_MAX_TOKENS >= 256
+    assert payload["temperature"] == 0
+
+
+def test_reasoning_effort_can_be_left_out():
+    transport = respond(200, GOOD_BODY)
+
+    GroqClient(KEY, "openai/gpt-oss-20b", reasoning_effort=None, transport=transport).complete("x")
+
+    assert "reasoning_effort" not in transport.calls[0][2]
+
+
+def test_the_finish_reason_is_passed_on():
+    body = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+
+    result = GroqClient(KEY, transport=respond(200, body)).complete("t")
+
+    assert result.finish_reason == "length"
+
+
+def test_the_apis_own_error_message_is_shown_and_the_key_is_hidden():
+    body = {"error": {"code": "invalid_request", "message": f"bad parameter, key {KEY} leaked"}}
+    client = GroqClient(KEY, transport=respond(400, body))
+
+    with pytest.raises(PermanentError) as caught:
+        client.complete("text")
+
+    assert "invalid_request bad parameter" in str(caught.value)
+    assert KEY not in str(caught.value)
+
+
+def test_an_error_body_that_is_not_json_is_ignored():
+    client = GroqClient(KEY, transport=respond(400, None))
+    client._transport = lambda *args: (400, {}, b"<html>nope</html>")
+
+    with pytest.raises(PermanentError) as caught:
+        client.complete("text")
+
+    assert str(caught.value) == "HTTP 400"
+
+
+def test_the_default_model_is_not_one_groq_has_shut_down():
+    assert labeler.DEFAULT_MODEL not in labeler.RETIRED_MODELS
+    assert "llama-3.1-8b-instant" in labeler.RETIRED_MODELS
+
+
 # ------------------------------------------------------------------ one labelling pass
 
 
@@ -257,20 +314,98 @@ def test_pending_requests_get_a_label_with_model_and_prompt_version(store):
     assert client.texts == ["love it", "hate it"]
 
 
-def test_an_answer_that_is_not_a_label_is_discarded_and_logged_not_retried(store, caplog):
+def test_an_answer_that_is_not_a_label_is_kept_for_a_second_try_and_logged(store, caplog):
     request_id = add(store, "meh")
     worker, _ = make_labeler(store, FakeClient(LLMResult("It is neutral overall", 90)))
 
     with caplog.at_level(logging.WARNING, logger="reviewpulse.labeler"):
         summary = worker.run_once()
 
-    assert (summary.labelled, summary.discarded) == (0, 1)
-    assert store.counts_by_status() == {"pending": 0, "labelled": 0, "discarded": 1}
-    assert store.claim_pending(10) == []  # temperature 0 would just repeat itself
+    assert (summary.labelled, summary.discarded, summary.rejected) == (0, 0, 1)
+    assert store.counts_by_status() == {"pending": 1, "labelled": 0, "discarded": 0}
+    assert store.claim_pending(10)[0]["id"] == request_id
     message = next(r.getMessage() for r in caplog.records if "not a label" in r.getMessage())
     assert f"request {request_id}" in message
     assert "fake-model" in message and f"prompt {PROMPT_VERSION}" in message
     assert store.calls_today() == 1  # the call still cost tokens
+
+
+def test_a_request_is_discarded_on_its_second_failure_once_the_setup_has_worked(store):
+    good = add(store, "this one proves the setup works")
+    odd = add(store, "meh")
+    client = FakeClient(
+        LLMResult("positive", 50),  # request `good`
+        LLMResult("neutral", 50),  # request `odd`, first failure
+        LLMResult("still neutral", 50),  # request `odd`, second failure
+    )
+    worker, _ = make_labeler(store, client)
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert (first.labelled, first.rejected, first.discarded) == (1, 1, 0)
+    assert (second.discarded, second.rejected) == (1, 0)
+    assert store.counts_by_status() == {"pending": 0, "labelled": 1, "discarded": 1}
+    assert good != odd
+
+
+def test_nothing_is_ever_discarded_before_a_single_good_answer_has_been_seen(store):
+    for i in range(3):
+        add(store, f"review {i}")
+    client = FakeClient(*[LLMResult("neutral", 50)] * 6)
+    worker, _ = make_labeler(store, client)
+
+    for _ in range(2):
+        worker.run_once()
+
+    assert store.counts_by_status() == {"pending": 3, "labelled": 0, "discarded": 0}
+
+
+def test_a_failing_request_goes_behind_fresh_ones(store):
+    first, second, third = add(store, "one"), add(store, "two"), add(store, "three")
+    store.record_attempt(first, "neutral")
+
+    assert [r["id"] for r in store.claim_pending(10)] == [second, third, first]
+
+
+def test_the_labeller_stops_after_several_unusable_answers_in_a_row_and_keeps_everything(
+    store, caplog
+):
+    for i in range(6):
+        add(store, f"review {i}")
+    worker, _ = make_labeler(store, FakeClient(*[LLMResult("I cannot decide", 50)] * 10))
+
+    with caplog.at_level(logging.ERROR, logger="reviewpulse.labeler"):
+        summary = worker.run_once(batch_size=10)
+        again = worker.run_once()
+
+    assert "4 unusable answers in a row" in summary.stopped
+    assert again.stopped == summary.stopped
+    assert store.counts_by_status() == {"pending": 6, "labelled": 0, "discarded": 0}
+    assert len(worker.client.texts) == 4  # it did not keep spending calls
+    assert any("Check GROQ_API_KEY, LABEL_MODEL" in r.getMessage() for r in caplog.records)
+
+
+def test_a_good_answer_resets_the_count_of_unusable_ones(store):
+    for i in range(8):
+        add(store, f"review {i}")
+    bad, good = LLMResult("hmm", 50), LLMResult("positive", 50)
+    worker, _ = make_labeler(store, FakeClient(bad, bad, bad, good, bad, bad, bad, good))
+
+    summary = worker.run_once(batch_size=10)
+
+    assert summary.stopped is None
+    assert summary.labelled == 2
+
+
+def test_a_cut_off_answer_gets_a_hint_about_the_token_limit(store, caplog):
+    add(store, "one")
+    worker, _ = make_labeler(store, FakeClient(LLMResult("", 512, finish_reason="length")))
+
+    with caplog.at_level(logging.WARNING, logger="reviewpulse.labeler"):
+        worker.run_once()
+
+    assert any("raise LABEL_MAX_TOKENS" in r.getMessage() for r in caplog.records)
 
 
 def test_a_rate_limit_leaves_the_request_pending_and_waits_as_told(store):
@@ -325,15 +460,40 @@ def test_a_bad_key_stops_the_labeller_for_good_and_says_so(store, caplog):
     assert any("Check GROQ_API_KEY" in r.getMessage() for r in caplog.records)
 
 
-def test_a_request_the_api_refuses_is_discarded_and_the_rest_go_on(store):
-    add(store, "bad request")
+def test_a_request_the_api_refuses_is_retried_once_and_the_rest_go_on(store):
+    refused = add(store, "bad request")
     add(store, "good request")
-    client = FakeClient(PermanentError("HTTP 400"), LLMResult("positive", 80))
+    client = FakeClient(
+        PermanentError("HTTP 400"), LLMResult("positive", 80), PermanentError("HTTP 400")
+    )
     worker, _ = make_labeler(store, client)
 
-    summary = worker.run_once()
+    first = worker.run_once()
+    second = worker.run_once()
 
-    assert (summary.labelled, summary.discarded) == (1, 1)
+    assert (first.labelled, first.rejected) == (1, 1)
+    assert (second.discarded, second.rejected) == (1, 0)  # the second refusal discards it
+    assert store.counts_by_status() == {"pending": 0, "labelled": 1, "discarded": 1}
+    assert refused
+
+
+def test_a_missing_model_stops_the_labeller_and_discards_nothing(store, caplog):
+    for i in range(3):
+        add(store, f"review {i}")
+    transport = respond(
+        404, {"error": {"code": "model_not_found", "message": "The model `gone` does not exist"}}
+    )
+    worker, _ = make_labeler(store, GroqClient(KEY, "gone", transport=transport))
+
+    with caplog.at_level(logging.ERROR, logger="reviewpulse.labeler"):
+        summary = worker.run_once()
+        again = worker.run_once()
+
+    assert "HTTP 404: model_not_found The model `gone` does not exist" in summary.stopped
+    assert again.stopped == summary.stopped
+    assert len(transport.calls) == 1  # it did not try the other requests
+    assert store.counts_by_status() == {"pending": 3, "labelled": 0, "discarded": 0}
+    assert any("Check GROQ_API_KEY, LABEL_MODEL" in r.getMessage() for r in caplog.records)
 
 
 def test_the_daily_cap_stops_labelling_and_resumes_the_next_day(store, caplog):
@@ -441,6 +601,7 @@ def test_settings_come_from_the_environment_and_bad_numbers_fall_back(store, cap
         built = Labeler.from_env(store, env)
 
     assert built.client.model == "llama-other"
+    assert built.client.max_tokens == labeler.DEFAULT_MAX_TOKENS
     assert built.daily_cap == 50
     assert built.min_interval_seconds == labeler.DEFAULT_MIN_INTERVAL
     assert any("LABEL_MIN_INTERVAL_SECONDS" in r.getMessage() for r in caplog.records)
@@ -524,3 +685,29 @@ def test_a_bad_key_ends_the_thread(store):
     assert ended
     assert worker.stopped_reason
     assert threading.active_count() >= 1
+
+
+def test_the_default_settings_are_the_documented_ones(store):
+    built = Labeler.from_env(store, {"GROQ_API_KEY": KEY})
+
+    assert built.client.model == "openai/gpt-oss-20b"
+    assert built.client.reasoning_effort == "low"
+    assert (built.daily_cap, built.min_interval_seconds) == (200, 6.0)
+
+
+def test_reasoning_settings_come_from_the_environment(store):
+    env = {"GROQ_API_KEY": KEY, "LABEL_MAX_TOKENS": "900", "LABEL_REASONING_EFFORT": "none"}
+
+    built = Labeler.from_env(store, env)
+
+    assert built.client.max_tokens == 900
+    assert built.client.reasoning_effort is None
+
+
+def test_a_retired_model_name_is_flagged_at_start_up(store, caplog):
+    env = {"GROQ_API_KEY": KEY, "LABEL_MODEL": "llama-3.1-8b-instant"}
+
+    with caplog.at_level(logging.WARNING, logger="reviewpulse.labeler"):
+        Labeler.from_env(store, env)
+
+    assert any("shut down by Groq" in r.getMessage() for r in caplog.records)
