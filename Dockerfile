@@ -41,6 +41,7 @@ RUN mkdir -p /app/models /app/logs /app/.cache \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=appuser src ./src
+COPY --chown=appuser data/reference ./data/reference
 COPY --chown=appuser scripts/fetch_model.py scripts/healthcheck.py ./scripts/
 
 USER appuser
