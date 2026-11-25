@@ -1,0 +1,20 @@
+# What the Docker image installs: only what the API needs to serve predictions.
+# Every pin must match requirements.txt (scripts/check_requirements_sync.py checks this in CI).
+# torch is installed first from the CPU-only index by the Dockerfile.
+
+# Data and metrics (src/common.py imports these)
+pandas==2.2.3
+numpy==1.26.4
+scikit-learn==1.5.2
+
+# Model
+torch==2.15.0
+transformers==5.22.1
+
+# API
+fastapi==0.115.6
+pydantic==2.10.4
+uvicorn==0.34.0
+psycopg==3.3.8
+psycopg-binary==3.3.8
+SQLAlchemy==2.0.37
