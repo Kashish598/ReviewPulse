@@ -1,0 +1,38 @@
+{
+  "model": "openai/gpt-oss-20b",
+  "prompt_version": "v1",
+  "created_at": "2026-11-25T11:29:56+00:00",
+  "reviews": 600,
+  "answered": 600,
+  "complete": true,
+  "usable_answers": 600,
+  "invalid_answers": 0,
+  "refused_requests": 0,
+  "usable_share": 1.0,
+  "total_tokens": 147427,
+  "labeller_vs_human": {
+    "macro_f1": 0.9683262067298476,
+    "accuracy": 0.9683333333333334,
+    "confusion_matrix": [
+      [
+        295,
+        7
+      ],
+      [
+        12,
+        286
+      ]
+    ],
+    "n": 600
+  },
+  "accuracy_counting_unusable_as_wrong": 0.9683,
+  "labeller_vs_bert": {
+    "reviews": 600,
+    "agreement_rate": 0.95,
+    "disagreements": 30,
+    "labeller_right_when_they_disagree": 20,
+    "bert_right_when_they_disagree": 10,
+    "bert_accuracy_on_these": 0.9517,
+    "labeller_accuracy_on_these": 0.9683
+  }
+}
