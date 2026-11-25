@@ -365,8 +365,7 @@ def main() -> int:
         print(f"No BERT predictions at {args.bert_predictions}, skipping the agreement part.")
 
     human = [
-        (i, ID_TO_LABEL[int(label)])
-        for i, label in zip(test["row_id"], test["label"], strict=True)
+        (i, ID_TO_LABEL[int(label)]) for i, label in zip(test["row_id"], test["label"], strict=True)
     ]
     summary = summarise(human, results, bert)
     meta = {

@@ -202,11 +202,14 @@ def test_no_usable_answers_gives_no_accuracy():
 
 
 def test_agreement_with_bert_and_who_is_right_when_they_differ():
-    results = {i: record(i, label) for i, label in [(1, "positive"), (2, "positive"),
-                                                    (3, "negative"), (4, "negative")]}
+    results = {
+        i: record(i, label)
+        for i, label in [(1, "positive"), (2, "positive"), (3, "negative"), (4, "negative")]
+    }
     # human: 1 pos, 2 neg, 3 pos, 4 neg.  labeller: 1 ok, 2 wrong, 3 wrong, 4 ok.
-    bert = pd.DataFrame({"row_id": [1, 2, 3, 4],
-                         "pred": ["positive", "negative", "positive", "positive"]})
+    bert = pd.DataFrame(
+        {"row_id": [1, 2, 3, 4], "pred": ["positive", "negative", "positive", "positive"]}
+    )
     # bert: 1 ok, 2 ok, 3 ok, 4 wrong.
 
     stats = ev.summarise(HUMAN, results, bert)["labeller_vs_bert"]
@@ -221,8 +224,10 @@ def test_agreement_with_bert_and_who_is_right_when_they_differ():
 
 
 def test_markdown_shows_the_measured_numbers():
-    results = {i: record(i, label) for i, label in [(1, "positive"), (2, "negative"),
-                                                    (3, "positive"), (4, "negative")]}
+    results = {
+        i: record(i, label)
+        for i, label in [(1, "positive"), (2, "negative"), (3, "positive"), (4, "negative")]
+    }
     meta = {"model": "fake-model", "prompt_version": "v1", "created_at": "2026-11-26T10:00:00"}
 
     text = ev.render_markdown(ev.summarise(HUMAN, results), meta)
