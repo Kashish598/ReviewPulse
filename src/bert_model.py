@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from transformers import pipeline
@@ -94,16 +95,44 @@ class BertPredictor:
             raise ValueError(f"Unexpected nlptown label: {star_label!r}") from None
 
     def predict(self, texts: list[str]) -> list[Prediction]:
+        return self.predict_timed(texts)[0]
+
+    def predict_timed(self, texts: list[str]) -> tuple[list[Prediction], dict]:
+        """Predict and also return how long each stage took, in milliseconds.
+
+        Stages: `tokenize_ms` (the tokenizer run on its own, same text and limits),
+        `inference_ms` (the whole pipeline call minus `tokenize_ms`, so the model forward pass and
+        the pipeline's own post-processing) and `label_mapping_ms` (stars to negative/positive).
+        `total_ms` is their sum. The pipeline tokenizes internally and cannot be split, so the
+        tokenizer is timed separately; this costs about one extra tokenizer run. Timing never
+        changes the predictions, and a timing failure is logged and shown as 0 for that stage.
+        The timings are returned, not stored on the object, so concurrent requests cannot mix them.
+        """
         if not texts:
-            return []
+            empty = {"tokenize_ms": 0.0, "inference_ms": 0.0, "label_mapping_ms": 0.0}
+            return [], {**empty, "total_ms": 0.0}
 
         logger.debug("BERT predict: %d text(s), lengths %s", len(texts), [len(t) for t in texts])
+
+        tokenize_ms = 0.0
+        tokenizer = getattr(self.classifier, "tokenizer", None)
+        if tokenizer is not None:
+            try:
+                started = time.perf_counter()
+                tokenizer(texts, truncation=True, max_length=512)
+                tokenize_ms = (time.perf_counter() - started) * 1000
+            except Exception:
+                logger.exception("Could not time tokenization; reporting 0 ms for that stage")
+
+        started = time.perf_counter()
         raw_predictions = self.classifier(
             texts,
             batch_size=32,
             truncation=True,
             max_length=512,
         )
+        pipeline_ms = (time.perf_counter() - started) * 1000
+        inference_ms = max(pipeline_ms - tokenize_ms, 0.0)
 
         if len(raw_predictions) != len(texts):
             raise RuntimeError(
@@ -112,6 +141,7 @@ class BertPredictor:
             )
 
         logger.debug("BERT raw output: %s", raw_predictions)
+        started = time.perf_counter()
         predictions = [
             Prediction(
                 label=self.map_stars_to_label(result["label"]),
@@ -119,5 +149,14 @@ class BertPredictor:
             )
             for result in raw_predictions
         ]
+        label_mapping_ms = (time.perf_counter() - started) * 1000
         logger.debug("BERT mapped output: %s", predictions)
-        return predictions
+
+        stages = {
+            "tokenize_ms": tokenize_ms,
+            "inference_ms": inference_ms,
+            "label_mapping_ms": label_mapping_ms,
+            "total_ms": tokenize_ms + inference_ms + label_mapping_ms,
+        }
+        logger.debug("BERT stage times (ms): %s", {k: round(v, 3) for k, v in stages.items()})
+        return predictions, stages

@@ -34,3 +34,17 @@ def _no_saving_or_labelling_unless_a_test_asks():
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _do_not_load_the_real_model_at_startup():
+    """Starting the app loads the real model in the background. Tests that do not supply their own
+    predictor must not do that (it needs the 700 MB model folder). Tests that override
+    get_predictor still get their predictor loaded."""
+    previous = os.environ.get("MODEL_PRELOAD")
+    os.environ["MODEL_PRELOAD"] = "off"
+    yield
+    if previous is None:
+        os.environ.pop("MODEL_PRELOAD", None)
+    else:
+        os.environ["MODEL_PRELOAD"] = previous
