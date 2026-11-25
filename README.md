@@ -440,3 +440,43 @@ The tests cover data preparation, shared utilities, the BERT and TF-IDF model ad
 - `CONTRIBUTION.md` — team responsibilities and contributions.
 - `AI_USAGE.md` — disclosure of AI-assisted development and review.
 - `docs/MILESTONE_1_COMPLETION.md` — what was delivered in Milestone 1, how it is structured, the results and the known limitations.
+
+## Project Focus: data drift detection and the retraining loop
+
+**What the focus is.** ReviewPulse watches the reviews that people send to `/predict` and notices
+when they stop looking like the data the model was trained on. When that happens it sends an email
+alert. Every request is also saved, labelled by an LLM in the background, and kept as new training
+data for a retraining step. A retrained model replaces the current one only if it clears a margin
+on validation and is not worse on the original human-labelled test set.
+
+**Why it suits this project.** A sentiment model is trained once on 10,000 product reviews, but the
+reviews it sees later change: new products, other languages (Urdu, Hindi, emoji), much shorter or
+longer text. Nobody labels production traffic, so the model can get worse without any error
+showing. Input drift can be measured without labels, and an LLM can supply labels cheaply, which
+makes drift detection plus retraining a natural fit for a text classifier behind an API.
+
+**What we build and where it stands.**
+
+| Part | What it does | Status |
+|---|---|---|
+| Drift detector (`src/drift.py`, `scripts/build_drift_reference.py`) | Compares a rolling window of requests with a snapshot of the 10,000 training reviews: text length, word count, share of non-ASCII characters, unknown-word rate and share of "positive" predictions, using PSI with a threshold of 0.25. | Built and tested. On clean data 0 of 5 windows of 200 reviews were flagged. Shifted traffic (short text, emoji, other scripts, all-positive answers) is flagged. |
+| Email alert (`src/alerts.py`) | Sends one email naming the drifted features and their PSI, with a cooldown so it does not repeat. | Built and tested. A real email was received. |
+| Request store (`src/feedback_store.py`) | Saves each request with the model's answer in Postgres (Neon) or SQLite, with a fixed train/validation split and label status. | Built and tested on SQLite and on real Postgres. |
+| LLM labeller (`src/labeler.py`) | Labels saved requests in the background with Groq (`openai/gpt-oss-20b`, temperature 0, one word). Anything that is not exactly `negative` or `positive` is never used as a label. Daily cap, rate-limit handling, every disagreement with the model logged. | Built and tested, including real Groq calls. |
+| Labeller validation (`scripts/eval_labeler.py`) | Runs the labeller on the 600 human-labelled test reviews to measure its accuracy before its labels are trusted. | Next |
+| Retraining (`src/retrain.py`) | Trains candidates on the original 10,000 plus labelled requests, logs every candidate to MLflow. | Next |
+| Promotion | Picks the best candidate on validation, scores it once on the test set, promotes it only if it clears the margin. The current model is stored as an MLflow alias. | Next |
+
+**How we demonstrate it.**
+
+1. Start the API and send normal traffic: `python scripts/simulate_drift.py --mode normal --count 150`.
+   `/drift` reports no drift and no email is sent.
+2. Send shifted traffic: `python scripts/simulate_drift.py --mode shifted --count 150`.
+   The detector flags the drifted features and an alert email arrives.
+3. Show the saved requests in the database and the labeller giving them an `llm_label`
+   (and the log line for a disagreement with the model).
+4. Run retraining, show the candidate runs in the MLflow UI, then show one promotion and one
+   refusal.
+
+**Privacy.** Reviews sent to `/predict` are stored together with the model's answer and may be used
+to retrain the model. Do not send personal data. Set `FEEDBACK_STORE=off` to stop saving.
