@@ -579,3 +579,5 @@ to retrain the model. Do not send personal data. Set `FEEDBACK_STORE=off` to sto
 - Promote a retrained model only when it beats the current one by a margin on validation and is not worse on the human-labelled test set (selection on validation, the test set scored once).
 - Use the labeller validation numbers in `docs/labeler_eval.md` to set the retraining trigger.
 - Add an `/explain` endpoint (explainability) for the final demonstration.
+
+video demo.
