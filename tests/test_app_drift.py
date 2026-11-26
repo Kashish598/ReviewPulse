@@ -171,4 +171,3 @@ def test_the_committed_reference_file_loads_and_drift_is_on():
         app.dependency_overrides.clear()
 
     assert body["status"] != "disabled"
-    
