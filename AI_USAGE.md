@@ -144,4 +144,3 @@ This document records how AI tools were used by each team member during Mileston
 - AI did not produce or estimate any reported result. The labeller accuracy (**96.8% on the 600 human-labelled test reviews**) comes from running `scripts/eval_labeler.py`, and the figures in `docs/labeler_eval.md` come from that run.
 - AI could not reach the real services. I ran the request store against a real Postgres database and the labeller against the real Groq API, not in AI's sandbox.
 
-
