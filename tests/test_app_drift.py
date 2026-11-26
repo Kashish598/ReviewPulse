@@ -80,7 +80,10 @@ def recorder():
 @pytest.fixture
 def client(recorder):
     drift.set_detector(drift.DriftDetector(make_reference()))
-    app.dependency_overrides[get_predictor] = AlternatingPredictor
+    # One shared instance: FastAPI calls a class override once per request, which would give a
+    # fresh counter every time and make every answer "positive".
+    predictor = AlternatingPredictor()
+    app.dependency_overrides[get_predictor] = lambda: predictor
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -168,3 +171,4 @@ def test_the_committed_reference_file_loads_and_drift_is_on():
         app.dependency_overrides.clear()
 
     assert body["status"] != "disabled"
+    
