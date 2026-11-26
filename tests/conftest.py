@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from src import alerts, drift
 from src.logging_config import reset_logging
 
 
@@ -48,3 +49,28 @@ def _do_not_load_the_real_model_at_startup():
         os.environ.pop("MODEL_PRELOAD", None)
     else:
         os.environ["MODEL_PRELOAD"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_email_from_tests():
+    """A developer's shell may have SMTP settings. Tests must never send a real email; tests that
+    need an alert install their own manager with a fake sender (see tests/test_app_drift.py)."""
+    names = ("SMTP_USER", "SMTP_PASSWORD", "ALERT_TO")
+    saved = {name: os.environ.get(name) for name in names}
+    for name in names:
+        os.environ.pop(name, None)
+    yield
+    for name, value in saved.items():
+        if value is not None:
+            os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _fresh_drift_and_alert_state():
+    """The drift window and the alert cooldown are module-level state. Start every test empty so
+    requests made by one test cannot change what another test sees."""
+    drift.reset_detector()
+    alerts.set_manager(None)
+    yield
+    drift.reset_detector()
+    alerts.set_manager(None)
