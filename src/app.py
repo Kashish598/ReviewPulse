@@ -10,6 +10,11 @@ within seconds). GET /ready says whether the model has finished loading (200) or
 model loads in a background thread at startup. GET /stats and GET /metrics return request and
 model timings (src/monitoring.py).
 
+Drift: after each prediction the review's simple features are added to a rolling window and
+compared with the reference snapshot (src/drift.py). When the window has drifted, an email alert is
+sent (src/alerts.py, with a cooldown). GET /drift shows the current state; the status is "disabled"
+when there is no reference file. Both run after the response is sent and never fail /predict.
+
 MODEL_PRELOAD=off skips the startup load (the first /predict loads the model instead).
 
 Logs go to logs/reviewpulse.log and the console (see src/logging_config.py). Set LOG_LEVEL=DEBUG
@@ -34,7 +39,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from src import feedback_store, labeler
+from src import alerts, drift, feedback_store, labeler
 from src.common import MODELS_DIR, Predictor
 from src.logging_config import setup_logging
 from src.monitoring import stats
@@ -110,6 +115,11 @@ async def lifespan(_app: FastAPI):
     _app.state.labeler = labeler.start_labeler()  # None without a store or a GROQ_API_KEY
     _app.state.predictor = None
     _app.state.model_error = None
+    drift.set_on_drift(alert_on_drift)
+    try:
+        drift.get_detector()  # logs at startup whether drift detection is on
+    except Exception:
+        logger.exception("Could not start drift detection; the API runs without it")
     if get_predictor in _app.dependency_overrides:
         # A test (or an embedding program) supplied its own predictor: it is quick, load it now.
         _load_model_into_state(_app)
@@ -145,6 +155,12 @@ async def time_predict_requests(request: Request, call_next):
     if request.url.path == "/predict" and response.status_code == 200:
         stats.record_request((time.perf_counter() - started) * 1000)
     return response
+
+
+def alert_on_drift(report: drift.DriftReport) -> None:
+    """Called by the detector when the window has drifted. The alert module logs it and sends the
+    email in the background, at most once per cooldown. Never raises."""
+    alerts.alert_drift(report.to_dict())
 
 
 def save_request(text: str, label: str, score: float | None, model_name: str | None) -> None:
@@ -196,6 +212,13 @@ def ready(request: Request) -> JSONResponse:
     return JSONResponse(status_code=503, content={"status": "loading"})
 
 
+@app.get("/drift")
+def get_drift() -> dict:
+    """Is the traffic still like the training data? Status: ok, drift, insufficient_data (the
+    window is still filling) or disabled (no reference snapshot)."""
+    return drift.current_report().to_dict()
+
+
 @app.get("/stats")
 @app.get("/metrics")
 def get_stats() -> dict:
@@ -226,5 +249,6 @@ def predict(
     result, stages = predict_with_timing(predictor, request.text)
     stats.record_model(model_name, stages["total_ms"], stages)
     logger.debug("predict: model=%s label=%s score=%s", model_name, result.label, result.score)
+    background_tasks.add_task(drift.observe, request.text, result.label)
     background_tasks.add_task(save_request, request.text, result.label, result.score, model_name)
     return PredictResponse(sentiment=result.label, score=result.score)
