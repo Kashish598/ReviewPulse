@@ -17,7 +17,7 @@ time you deploy something that works.
 | Current image tag (Render, Settings, Deploy) | ghcr.io/kashish598/reviewpulse:sha-dd0305d |
 | Last known good tag (roll back to this) | sha-521f973 |
 | Deployed on | 26 / 11 / 2026 |
-| Render account owner | Kashish |
+| Render account owner | Abdullah |
 
 **Never delete old image tags from the GitHub Packages registry (ghcr).** A Render rollback needs
 the old image to still exist. If it is gone, the rollback fails.
@@ -32,7 +32,10 @@ the old image to still exist. If it is gone, the rollback fails.
 | Database | Neon Postgres (`DATABASE_URL`). Without it the app uses a local SQLite file that is lost on redeploy |
 | Labeller | Groq (`GROQ_API_KEY`) |
 
-Last tested by a teammate who did not write it: ______________ on ____ / ____ / 2026
+**Note on Live Testing and Account Access**
+Due to Render's billing structure, inviting additional team members to the dashboard requires upgrading to a Pro workspace. This would add a flat monthly fee per user on top of our existing $25/month compute costs. 
+
+Because we are actively suspending the service to conserve funds, we have opted not to upgrade. Consequently, only the single account owner has access to the Render dashboard. The live deployment, rollback, and suspend/resume steps in this runbook cannot be independently verified by other teammates. Team members should rely on Section 5 to test the deployment image locally via Docker.
 
 ## 1. Check that it is running
 
