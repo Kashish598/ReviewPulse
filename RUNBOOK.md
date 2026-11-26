@@ -11,12 +11,13 @@ time you deploy something that works.
 | | |
 |---|---|
 | Live URL | https://reviewpulse-0j1b.onrender.com |
-| Render region | ______________ |
-| Render plan | 1 CPU / 2 GB |
-| Current image tag (Render, Settings, Deploy) | ghcr.io/kashish598/reviewpulse:sha-__________ |
-| Last known good tag (roll back to this) | sha-__________ |
-| Deployed on | ____ / ____ / 2026 |
-| Render account owner | ______________ |
+| Render service name | reviewpulse |
+| Render region | Ohio (US East) |
+| Render plan | 1 CPU / 2 GB (`1c-2g`) |
+| Current image tag (Render, Settings, Deploy) | ghcr.io/kashish598/reviewpulse:sha-dd0305d |
+| Last known good tag (roll back to this) | sha-521f973 |
+| Deployed on | 26 / 11 / 2026 |
+| Render account owner | Kashish |
 
 **Never delete old image tags from the GitHub Packages registry (ghcr).** A Render rollback needs
 the old image to still exist. If it is gone, the rollback fails.
