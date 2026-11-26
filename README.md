@@ -1,8 +1,13 @@
 # ReviewPulse
 
-A sentiment analysis service for Amazon product reviews. ReviewPulse prepares a reproducible dataset, evaluates pretrained BERT sentiment models, fine-tunes the selected one, compares it with a TF-IDF baseline, tracks every experiment with MLflow, and serves the selected model through a FastAPI REST API.
+A sentiment analysis service for Amazon product reviews. ReviewPulse prepares a reproducible dataset, evaluates pretrained BERT sentiment models, fine-tunes the selected one, compares it with a TF-IDF baseline, tracks every experiment with MLflow, and serves the selected model through a FastAPI REST API. The service runs in Docker, is checked by GitHub Actions on every push, is deployed on Render, and watches its own traffic: it counts and times requests, saves the reviews it receives, labels them in the background with an LLM, and sends an email alert when incoming reviews stop looking like the training data (data drift).
 
-**Status:** Milestone 1 — model evaluation, TF-IDF baseline, fine-tuning study and API implementation. See `docs/MILESTONE_1_COMPLETION.md` for the full summary.
+**Status:** Milestone 2: containerisation, CI/CD, deployment and monitoring are in place, and the Project Focus (drift detection and a retraining loop) is under way (see the last section). The Milestone 1 work (model evaluation, TF-IDF baseline, fine-tuning study and API) is documented below; see `docs/MILESTONE_1_COMPLETION.md` for its summary.
+
+- **Live API:** https://reviewpulse-0j1b.onrender.com (interactive docs at `/docs`). *The service is suspended outside grading hours to save cost. The first request after a pause can take a minute or more: call `/health` first and wait until `/ready` answers 200.*
+- **Container image:** [`ghcr.io/kashish598/reviewpulse`](https://github.com/Kashish598/ReviewPulse/pkgs/container/reviewpulse)
+- **Image running in production:** `sha-dd0305d`
+- **Redeploy, roll back, logs:** [RUNBOOK.md](RUNBOOK.md)
 
 ## Architecture
 
@@ -23,9 +28,15 @@ flowchart LR
     L --> E
     M --> E
     M --> N[Fine-tuned nlptown model]
+    H --> P["/stats and log file"]
+    H --> Q[Drift detector]
+    Q --> R[Email alert]
+    H --> S[Request store]
+    S --> T[LLM labeller]
+    T --> U[Retraining]
 ```
 
-The API serves the fine-tuned BERT model when it is present locally (the pretrained model otherwise). Model selection is based on validation-set performance. The held-out test set is reserved for final evaluation. Fine-tuning runs on a GPU (Kaggle); everything else runs on a CPU.
+The API serves the fine-tuned BERT model when it is present locally (the pretrained model otherwise). Model selection is based on validation-set performance. The held-out test set is reserved for final evaluation. Fine-tuning runs on a GPU (Kaggle); everything else runs on a CPU. In production the API runs as a Docker image on Render (see CI/CD and Deployment).
 
 ## Technology Stack
 
@@ -35,6 +46,8 @@ The API serves the fine-tuned BERT model when it is present locally (the pretrai
 - **Experiment tracking:** MLflow
 - **API:** FastAPI, Pydantic, Uvicorn
 - **Testing and code quality:** pytest, Ruff
+- **Packaging and delivery:** Docker, GitHub Actions, GitHub Container Registry, Render
+- **Data loop and monitoring:** Neon (PostgreSQL) with SQLAlchemy for saved requests, Groq for LLM labelling, Python `logging`, drift detection (PSI), SMTP email alerts
 
 ## Quick Start
 
@@ -100,8 +113,33 @@ Open the interactive API documentation at:
 ```bash
 python -m pytest -v
 python -m ruff check .
-python -m ruff format --check src tests
+python -m ruff format --check src tests scripts
 ```
+
+### 8. Run it in Docker
+
+One command builds the image and one runs it. The build downloads the fine-tuned model (about 640 MB) into the image, so allow some minutes the first time.
+
+```bash
+docker build --build-arg MODEL_HF_REPO=Musknnnn/nlptown-sentiment -t reviewpulse:local .
+docker run --rm -p 10000:10000 -e PORT=10000 reviewpulse:local
+```
+
+Open http://localhost:10000/docs. In a second terminal, `docker ps` shows `(healthy)` in the STATUS column once the model has loaded.
+
+Without settings the container saves requests to a local SQLite file inside the container, does not label them and sends no alerts. To switch those on, pass your settings from a `.env` file (copy `.env.example`; write values without quotes and without spaces around `=`):
+
+```bash
+docker run --rm -p 10000:10000 -e PORT=10000 --env-file .env reviewpulse:local
+```
+
+To run the published image instead of building it, use a pinned `sha-` tag (the tag running in production is listed at the top of this file):
+
+```bash
+docker run --rm -p 10000:10000 -e PORT=10000 ghcr.io/kashish598/reviewpulse:sha-<SHORT_COMMIT>
+```
+
+Add `--env-file .env` as above to switch on the database, labeller and alerts.
 
 ## Dataset and Task
 
@@ -238,10 +276,10 @@ python -m src.train_tfidf --no-mlflow   # same, without MLflow tracking
 
 Outputs:
 
-- `models/tfidf_v1/` — `model.joblib` and `metadata.json` (not committed).
-- `data/predictions/tfidf_test.csv` — row-by-row test predictions, in the same format as `bert_test.csv`.
-- `data/predictions/tfidf_test_metrics.json` — test metrics of the selected model.
-- MLflow experiment `reviewpulse-tfidf` — one run per candidate classifier (validation metrics, fit time, tags) plus one run for the selected model.
+- `models/tfidf_v1/`: `model.joblib` and `metadata.json` (not committed).
+- `data/predictions/tfidf_test.csv`: row-by-row test predictions, in the same format as `bert_test.csv`.
+- `data/predictions/tfidf_test_metrics.json`: test metrics of the selected model.
+- MLflow experiment `reviewpulse-tfidf`: one run per candidate classifier (validation metrics, fit time, tags) plus one run for the selected model.
 
 Selected model: linear SVM.
 
@@ -340,15 +378,16 @@ Start the API:
 python -m uvicorn src.app:app --reload
 ```
 
-### Health Check
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness: the process is up. Answers at once and never loads the model. Names the model (and whether it is fine-tuned) once it is loaded. |
+| GET | `/ready` | Readiness: 200 when the model is loaded, 503 (`loading` or `error`) otherwise. |
+| POST | `/predict` | Sentiment for `{"text": "..."}` (1 to 5000 characters). Empty, blank, missing or over-long text gets HTTP 422. |
+| GET | `/stats`, `/metrics` | Request count, average API latency and average model latency, in total and per model with tokenize, inference and label-mapping times. Counts successful `/predict` calls; resets on restart. |
+| GET | `/drift` | Drift status of recent traffic against the training data: `ok`, `drift`, `insufficient_data` (window still filling) or `disabled`. |
+| GET | `/docs` | Interactive Swagger UI. |
 
-```http
-GET /health
-```
-
-Returns the API status, the name of the model being served and whether it is fine-tuned.
-
-### Sentiment Prediction
+### Sentiment prediction
 
 ```http
 POST /predict
@@ -365,7 +404,58 @@ Example request:
 
 The endpoint returns a sentiment prediction and its associated model score. The score is the confidence associated with the model's original star prediction; it should not be interpreted as a calibrated probability of the mapped binary sentiment.
 
+> **Privacy.** Reviews sent to `/predict` are stored, together with the model's answer, and may be used to retrain the model. Nothing else about the caller is stored. Do not send personal data.
+
 Interactive request and response schemas are available through `/docs`.
+
+### Example requests against the live service
+
+```bash
+curl https://reviewpulse-0j1b.onrender.com/health
+curl https://reviewpulse-0j1b.onrender.com/ready
+curl -X POST https://reviewpulse-0j1b.onrender.com/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Great product, works well."}'
+curl https://reviewpulse-0j1b.onrender.com/stats
+curl https://reviewpulse-0j1b.onrender.com/drift
+```
+
+PowerShell:
+
+```powershell
+$H = "https://reviewpulse-0j1b.onrender.com"
+Invoke-RestMethod "$H/health"
+Invoke-RestMethod -Method Post -Uri "$H/predict" -ContentType "application/json" -Body '{"text":"Great product, works well."}'
+Invoke-RestMethod "$H/stats" | ConvertTo-Json -Depth 5
+```
+
+## Monitoring
+
+- **Request count and latency:** `/stats` (and `/metrics`, the same JSON) returns `request_count`, `avg_api_latency_ms`, `avg_model_latency_ms` and a `per_model` block. The API time includes the model time, so it is always the larger.
+- **Logs:** every component logs through Python's `logging` module to the console and to `logs/reviewpulse.log` (rotating, 5 MB, 5 backups). `LOG_LEVEL=DEBUG` also records what each stage received and returned. On Render the console output is in the service's Logs tab.
+- **Data drift:** after each prediction the review's simple features are added to a rolling window of the last 200 requests and compared with a reference snapshot of the 10,000 training reviews (`data/reference/reference.json`) using the Population Stability Index. When the window drifts, the log records an alert and an email is sent, at most once per hour. `scripts/simulate_drift.py` sends normal or deliberately shifted traffic to a running API for a demonstration.
+
+## CI/CD and Deployment
+
+- **CI** (`.github/workflows/ci.yml`) runs on pushes to `main`, on pull requests, on version tags (`v*`) and manually: a **lint** job (`ruff check`, `ruff format --check`), a **test** job (`pytest`), and a **Docker build** job that needs both. On `main` and on tags the image is published to GitHub Container Registry as `sha-<short commit>`, `latest`, and the git tag.
+- **Deployment:** Render runs the published image as a web service with health check path `/health`. The model needs about 1 GB of memory, so the service uses a 2 GB instance (Render's 512 MB free plan is too small). Image-backed services do not redeploy by themselves: a new image is deployed from the Render dashboard or with a deploy hook.
+- **Redeploy and roll back:** see [RUNBOOK.md](RUNBOOK.md). Every image keeps its `sha-` tag, so an earlier version can be deployed again or run locally.
+
+## Settings (environment variables)
+
+Everything is optional locally. Copy `.env.example` to `.env` for a Docker run; on Render set them in the service's Environment tab. **Never commit `.env` or any key.**
+
+| Variable | Purpose |
+|---|---|
+| `PORT` | Port to listen on (default 8000; Render sets its own; the Docker examples above use 10000). |
+| `LOG_LEVEL`, `LIB_LOG_LEVEL`, `LOG_DIR` | Logging level for the app and for libraries (default `INFO`), log folder. |
+| `MODEL_HF_REPO` | Hugging Face repo to fetch the fine-tuned model from (`Musknnnn/nlptown-sentiment`). Without it the public pretrained model is used. |
+| `MODEL_URL`, `MODEL_SHA256` | Alternative source: a zip of the model folder and its checksum. |
+| `REVIEWPULSE_MODEL_DIR`, `MODEL_PRELOAD` | Serve a model from another folder; `off` loads the model on the first request instead of at startup. |
+| `DATABASE_URL`, `FEEDBACK_STORE` | Neon PostgreSQL connection string for saved requests (a SQLite file if unset); `off` stops saving. |
+| `GROQ_API_KEY`, `LABEL_ENABLED`, `LABEL_DAILY_CAP`, `LABEL_MIN_INTERVAL_SECONDS`, `LABEL_POLL_SECONDS`, `LABEL_MODEL`, `LABEL_MAX_TOKENS` | LLM labeller: key (it stays off without one), switch, daily call limit, pacing, model. |
+| `DRIFT_REFERENCE`, `DRIFT_WINDOW_SIZE`, `DRIFT_MIN_WINDOW`, `DRIFT_PSI_THRESHOLD` | Drift detector: reference file, window size (200), minimum requests before judging (100), PSI threshold (0.25). |
+| `SMTP_USER`, `SMTP_PASSWORD`, `ALERT_TO`, `SMTP_HOST`, `SMTP_PORT`, `ALERT_FROM`, `ALERT_COOLDOWN_SECONDS` | Email alerts. For Gmail use an app password. Alerts are only logged when these are not set. |
 
 ## Shared Code (`src/common.py`)
 
@@ -385,33 +475,32 @@ Predictions use the columns `row_id`, `label_true`, `pred`, and `score`.
 ReviewPulse/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml
+│       └── ci.yml             # lint, test, Docker build and publish
 ├── data/
-│   ├── sample/          # Small test fixtures, if included
-│   ├── processed/       # Generated dataset splits
-│   └── predictions/     # Generated evaluation predictions
-├── docs/                # data_report.json, mlflow_runs_summary.csv, MILESTONE_1_COMPLETION.md
-├── notebooks/           # Kaggle notebooks (candidate selection, fine-tuning, seeds and size) and the candidate MLflow database
-├── models/              # Locally saved model weights
+│   ├── sample/                # Small test fixtures, if included
+│   ├── processed/             # Generated dataset splits (not committed)
+│   ├── predictions/           # Evaluation predictions and metrics
+│   └── reference/             # Drift reference snapshot (committed)
+├── docs/                      # data report, MLflow summary, Milestone 1 report, labeller validation, retraining notes
+├── notebooks/                 # Kaggle notebooks (candidate selection, fine-tuning, seeds and size) and the candidate MLflow database
+├── models/                    # Locally saved model weights (not committed)
 ├── src/
-│   ├── app.py
+│   ├── app.py                 # FastAPI service
 │   ├── common.py
 │   ├── prepare_data.py
-│   ├── train_bert.py
-│   ├── evaluate_bert.py
-│   ├── bert_model.py
-│   ├── tfidf_model.py
-│   ├── train_tfidf.py
+│   ├── train_bert.py, evaluate_bert.py, bert_model.py
+│   ├── train_tfidf.py, tfidf_model.py
 │   ├── finetune_bert.py       # three fine-tuning recipes (GPU)
-│   └── finetune_scaling.py    # seeds x training size study (GPU)
-├── scripts/
-│   └── merge_mlflow_runs.py   # copy runs between MLflow databases (one-off tool)
+│   ├── finetune_scaling.py    # seeds x training size study (GPU)
+│   ├── logging_config.py, monitoring.py
+│   ├── drift.py, alerts.py
+│   ├── feedback_store.py, labeler.py, retrain.py
+├── scripts/                   # model fetch, healthcheck, drift reference and simulator, labeller validation, benchmark, requirements check, MLflow merge
 ├── tests/
-├── README.md
-├── CONTRIBUTION.md
-├── AI_USAGE.md
-├── requirements.txt
-└── pyproject.toml
+├── Dockerfile, .dockerignore
+├── requirements.txt, requirements-serve.txt, pyproject.toml
+├── .env.example
+├── README.md, RUNBOOK.md, CONTRIBUTION.md, AI_USAGE.md, LICENSE
 ```
 
 Generated dataset splits, model weights, virtual environments, MLflow run artifacts, and local database files should not be committed unless explicitly required for a particular deliverable.
@@ -421,8 +510,8 @@ Generated dataset splits, model weights, virtual environments, MLflow run artifa
 - Use descriptive branches such as `feat/...`, `fix/...`, and `infra/...`.
 - Open a pull request for changes and obtain approval from another team member before merging into `main`.
 - Run Ruff and pytest before pushing changes.
-- CI runs the repository's configured lint and test checks.
-- Add new dependencies to `requirements.txt` with pinned versions in the same change that introduces them.
+- CI runs `ruff check`, `ruff format --check src tests scripts` and `pytest`, then builds the Docker image. A pull request needs a green run and one approval.
+- Add new dependencies to `requirements.txt` with pinned versions in the same change that introduces them. If the API needs them at run time, add the same pins to `requirements-serve.txt` too (`scripts/check_requirements_sync.py` checks that both files agree).
 - Do not commit API keys, virtual environments, generated model weights, or local MLflow artifact directories.
 
 ## Tests
@@ -433,13 +522,17 @@ Run the complete test suite:
 python -m pytest -v
 ```
 
-The tests cover data preparation, shared utilities, the BERT and TF-IDF model adapters, TF-IDF MLflow logging, the FastAPI endpoints, and the pure logic of the two fine-tuning scripts (configs, selection rules, the extended training set, statistics, job splitting, MLflow replay). The tests that need PyTorch are skipped when it is not installed, so CI does not need a GPU; the training itself is checked by the smoke test (`--smoke`) in the Kaggle notebooks.
+The tests cover data preparation, shared utilities, the BERT and TF-IDF model adapters, TF-IDF MLflow logging, the FastAPI endpoints (including `/ready`, `/stats` and `/drift`), logging, request and latency monitoring, drift detection and email alerts (with a mocked mail server), the request store and the LLM labeller (without a real database or network), retraining, the model fetch script and the requirements check, and the pure logic of the two fine-tuning scripts (configs, selection rules, the extended training set, statistics, job splitting, MLflow replay). The tests that need PyTorch are skipped when it is not installed, so CI does not need a GPU; the training itself is checked by the smoke test (`--smoke`) in the Kaggle notebooks.
 
 ## Additional Documentation
 
-- `CONTRIBUTION.md` — team responsibilities and contributions.
-- `AI_USAGE.md` — disclosure of AI-assisted development and review.
-- `docs/MILESTONE_1_COMPLETION.md` — what was delivered in Milestone 1, how it is structured, the results and the known limitations.
+- `RUNBOOK.md`: how to check, redeploy and roll back the service, run an older image locally, and find the logs.
+- `CONTRIBUTION.md`: team responsibilities and contributions.
+- `AI_USAGE.md`: disclosure of AI-assisted development and review.
+- `docs/MILESTONE_1_COMPLETION.md`: what was delivered in Milestone 1, how it is structured, the results and the known limitations.
+- `docs/labeler_eval.md`: validation of the LLM labeller on the human-labelled test reviews.
+- `docs/retraining.md`: how retraining on labelled requests works.
+- `LICENSE`: MIT.
 
 ## Project Focus: data drift detection and the retraining loop
 
@@ -459,24 +552,30 @@ makes drift detection plus retraining a natural fit for a text classifier behind
 
 | Part | What it does | Status |
 |---|---|---|
-| Drift detector (`src/drift.py`, `scripts/build_drift_reference.py`) | Compares a rolling window of requests with a snapshot of the 10,000 training reviews: text length, word count, share of non-ASCII characters, unknown-word rate and share of "positive" predictions, using PSI with a threshold of 0.25. | Built and tested. On clean data 0 of 5 windows of 200 reviews were flagged. Shifted traffic (short text, emoji, other scripts, all-positive answers) is flagged. |
-| Email alert (`src/alerts.py`) | Sends one email naming the drifted features and their PSI, with a cooldown so it does not repeat. | Built and tested. A real email was received. |
-| Request store (`src/feedback_store.py`) | Saves each request with the model's answer in Postgres (Neon) or SQLite, with a fixed train/validation split and label status. | Built and tested on SQLite and on real Postgres. |
-| LLM labeller (`src/labeler.py`) | Labels saved requests in the background with Groq (`openai/gpt-oss-20b`, temperature 0, one word). Anything that is not exactly `negative` or `positive` is never used as a label. Daily cap, rate-limit handling, every disagreement with the model logged. | Built and tested, including real Groq calls. |
-| Labeller validation (`scripts/eval_labeler.py`) | Runs the labeller on the 600 human-labelled test reviews to measure its accuracy before its labels are trusted. | Next |
-| Retraining (`src/retrain.py`) | Trains candidates on the original 10,000 plus labelled requests, logs every candidate to MLflow. | Next |
+| Drift detector (`src/drift.py`, `scripts/build_drift_reference.py`) | Compares a rolling window of requests with a snapshot of the 10,000 training reviews: text length, word count, share of non-ASCII characters, unknown-word rate and share of "positive" predictions, using PSI with a threshold of 0.25. | Built, tested and connected to `/predict`; `/drift` shows the current status. On clean data 0 of 5 windows of 200 reviews were flagged. Shifted traffic (short text, emoji, other scripts, all-positive answers) is flagged. |
+| Email alert (`src/alerts.py`) | Sends one email naming the drifted features and their PSI, with a cooldown so it does not repeat. | Built and tested; a real email was received during development. |
+| Request store (`src/feedback_store.py`) | Saves each request with the model's answer in Postgres (Neon) or SQLite, with a fixed train/validation split and label status. | Built, tested on SQLite and on real Postgres, and connected to `/predict`. |
+| LLM labeller (`src/labeler.py`) | Labels saved requests in the background with Groq (`openai/gpt-oss-20b`, temperature 0, one word). Anything that is not exactly `negative` or `positive` is never used as a label. Daily cap, rate-limit handling, every disagreement with the model logged. | Built, tested, including real Groq calls, and running in the API. |
+| Labeller validation (`scripts/eval_labeler.py`) | Runs the labeller on the 600 human-labelled test reviews to measure its accuracy before its labels are trusted. | Done: results in `docs/labeler_eval.md`. |
+| Retraining (`src/retrain.py`) | Trains TF-IDF candidates on the original 10,000 plus labelled requests, logs every candidate to MLflow. | Built (see `docs/retraining.md`). |
 | Promotion | Picks the best candidate on validation, scores it once on the test set, promotes it only if it clears the margin. The current model is stored as an MLflow alias. | Next |
 
 **How we demonstrate it.**
 
-1. Start the API and send normal traffic: `python scripts/simulate_drift.py --mode normal --count 150`.
+1. Start the API and send normal traffic: `python scripts/simulate_drift.py --mode normal --count 150` (add `--url <API address>` for a deployed service).
    `/drift` reports no drift and no email is sent.
 2. Send shifted traffic: `python scripts/simulate_drift.py --mode shifted --count 150`.
    The detector flags the drifted features and an alert email arrives.
 3. Show the saved requests in the database and the labeller giving them an `llm_label`
    (and the log line for a disagreement with the model).
-4. Run retraining, show the candidate runs in the MLflow UI, then show one promotion and one
-   refusal.
+4. Run retraining and show the candidate runs in the MLflow UI. Promotion of a retrained model
+   is the next step (see Next steps).
 
 **Privacy.** Reviews sent to `/predict` are stored together with the model's answer and may be used
 to retrain the model. Do not send personal data. Set `FEEDBACK_STORE=off` to stop saving.
+
+**Next steps.**
+
+- Promote a retrained model only when it beats the current one by a margin on validation and is not worse on the human-labelled test set (selection on validation, the test set scored once).
+- Use the labeller validation numbers in `docs/labeler_eval.md` to set the retraining trigger.
+- Add an `/explain` endpoint (explainability) for the final demonstration.
