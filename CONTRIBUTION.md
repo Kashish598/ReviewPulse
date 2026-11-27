@@ -105,4 +105,3 @@ can download it. Checked each teammate's failing checks and unblocked them.
 
 **Muskan (Milestone 2):** Built the data loop behind the project focus: the request store, the LLM labeller, its validation on the 600 human-labelled test reviews (all answers usable, 96.8% accuracy against the human labels) and the retraining script, and coordinated the team's pull requests. The work showed that an LLM labeller has to be validated before its labels are trusted, and that an outside service can change underneath you: the model first chosen for the labeller was retired, which only a real API call exposed.
 
-video demo. 

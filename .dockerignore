@@ -1,3 +1,10 @@
+<!-- .dockerignore (A1). It lists what Docker must not copy into the image.
+
+It keeps secrets and local state out: .env, *.db, logs and mlruns.
+It leaves out tests, docs, notebooks and models, because the image doesn't serve from them. models is excluded because the weights come from fetch_model.py.
+It excludes data/* but keeps data/reference, because the drift detector needs the reference snapshot at runtime.
+A smaller build context also builds faster. -->
+
 # Keep the build context small and keep secrets and local state out of the image.
 .git
 .github

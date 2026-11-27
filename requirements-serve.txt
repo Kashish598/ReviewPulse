@@ -1,3 +1,8 @@
+# requirements-serve.txt (A1). This is the slim package list the image installs. 
+# Compared with requirements.txt, it leaves out datasets, httpx, mlflow, pytest and ruff, which serving doesn't need. 
+# It adds the database drivers (psycopg, SQLAlchemy) because the request store runs inside the container. 
+# Rule: anything that adds a dependency (KS will add scipy) must update both files in the same PR.
+
 # What the Docker image installs: only what the API needs to serve predictions.
 # Every pin must match requirements.txt (scripts/check_requirements_sync.py checks this in CI).
 # torch is installed first from the CPU-only index by the Dockerfile.

@@ -1,7 +1,24 @@
-# syntax=docker/dockerfile:1
+# PURPOSE:
+# Builds a Docker image for ReviewPulse, packaging the application,
+# Python dependencies, model and configuration needed to run it.
+# Uses a multi-stage build to keep the final image smaller.
+# The Dockerfile tells Docker how to package ReviewPulse into a container so that the application can run consistently on different machines and hosting platforms.
+# Without Docker, the application would need to be installed and configured on each machine, which can lead to inconsistencies and errors. Docker ensures that the application runs in the same environment regardless of where it is deployed.
 
-# ---------- build stage: Python packages go into a virtualenv ----------
-FROM python:3.11-slim AS builder
+# ============================================================
+# STAGE 01: BUILDER
+# ============================================================
+# Installs all Python dependencies inside a virtual environment.
+# This stage is used to prepare dependencies, not run the app.
+
+# ENV: Sets environment variables.
+# RUN: Executes commands during image building.
+# WORKDIR: Sets the working directory.
+# COPY: Copies requirements into the image.
+# venv: Creates an isolated Python environment.
+# pip install: Installs dependencies.
+# CPU-only PyTorch reduces image size by avoiding CUDA packages.
+# Cache mount speeds up repeated dependency installations.
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -22,6 +39,24 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --default-timeout=1000 --retries 10 -r requirements-serve.txt
 
+# ============================================================
+# STAGE 02: RUNTIME
+# ============================================================
+# Creates the final image that runs ReviewPulse.
+# Copies only the required dependencies, source code and files
+# from the builder stage and prepares the application to run.
+
+# ENV: Configures Python, Hugging Face cache and application port.
+# RUN: Creates directories and a non-root application user.
+# mkdir: Creates required directories.
+# chown: Changes directory ownership.
+# COPY --from=builder: Copies the virtual environment from Stage 01.
+# COPY: Copies application source code and required scripts.
+# USER: Runs the application as a non-root user for security.
+# ARG: Defines build-time model configuration.
+# HEALTHCHECK: Periodically checks whether the API is responding.
+# EXPOSE: Documents the application's listening port.
+# CMD: Fetches the model if necessary and starts FastAPI using Uvicorn.
 
 # ---------- run stage ----------
 FROM python:3.11-slim

@@ -1,3 +1,7 @@
+# scripts/check_requirements_sync.py. CI fails if any pin in the serve file differs from requirements.txt. 
+# It protects against "works in tests, breaks in the image". 
+# The test is tests/test_requirements_sync.py.
+
 import importlib.util
 import sys
 from pathlib import Path

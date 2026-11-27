@@ -1,3 +1,9 @@
+# src/logging_config.py (K1). 
+# setup_logging() runs once at startup and writes every record to the console and to logs/reviewpulse.log (5 files of 5 MB). 
+# LOG_LEVEL sets the level for our own loggers, and LIB_LOG_LEVEL sets it for libraries (uvicorn, transformers, httpx, urllib3, mlflow). 
+# At DEBUG it logs what each stage received. A file that can't be created never stops the app. 
+# Tests: tests/test_logging_config.py.
+
 """Logging for the API and the scripts: the `logging` module, a rotating log file, no print().
 
 Call `setup_logging()` once at start-up (the API does it in its lifespan). It
