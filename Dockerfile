@@ -20,6 +20,8 @@
 # CPU-only PyTorch reduces image size by avoiding CUDA packages.
 # Cache mount speeds up repeated dependency installations.
 
+FROM python:3.11-slim AS builder
+
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
