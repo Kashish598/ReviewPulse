@@ -15,6 +15,10 @@ Where it goes:
 Exit code 0 when a model is in place, 1 when it could not be fetched.
 """
 
+# fetch_model.py runs again at every start. When the model is baked in, it does nothing.
+# If an image was ever built without the model, it is a safety net that downloads it,
+# so the container still serves the right weights.
+
 from __future__ import annotations
 
 import hashlib

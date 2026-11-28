@@ -1,3 +1,14 @@
+# scripts/healthcheck.py (A1).
+# It calls http://127.0.0.1:$PORT/health with an 8-second timeout.
+# It exits 0 on a 200 and 1 otherwise.
+# Docker runs it every 30 seconds and shows (healthy) in docker ps.
+# It uses Python's urllib, so the slim image needs no curl.
+# It reads PORT, so it works with -e PORT=10000.
+
+# healthcheck.py uses plain Python, with a 180 s start period.
+# The slim image has no curl. The start period tells Docker to ignore failures
+# during the first model load.
+
 """Docker healthcheck: exit 0 when GET /health answers 200, otherwise exit 1."""
 
 from __future__ import annotations

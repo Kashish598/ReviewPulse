@@ -580,4 +580,3 @@ to retrain the model. Do not send personal data. Set `FEEDBACK_STORE=off` to sto
 - Use the labeller validation numbers in `docs/labeler_eval.md` to set the retraining trigger.
 - Add an `/explain` endpoint (explainability) for the final demonstration.
 
-video.
