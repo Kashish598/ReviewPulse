@@ -1,9 +1,15 @@
 # src/monitoring.py and src/app.py (K2, K3).
 
-# RequestStats holds thread-safe counters. A middleware in app.py times each /predict request, and the model records its own time per stage (tokenize, inference, label mapping).
-# /stats and /metrics return the same JSON: request_count, avg_api_latency_ms, avg_model_latency_ms and per_model. Only successful /predict calls are counted. Counters reset on restart.
-# The API time is always larger than the model time, because it includes validation and the response.
-# In app.py, /health is a liveness check that never loads the model. /ready returns 200 once the model has loaded, and 503 while loading or on failure. The model loads at startup, which is why your log said "Model ready after 4.4 s".
+# RequestStats holds thread-safe counters. A middleware in app.py times each /predict request,
+# and the model records its own time per stage (tokenize, inference, label mapping).
+# /stats and /metrics return the same JSON: request_count, avg_api_latency_ms,
+# avg_model_latency_ms and per_model. Only successful /predict calls are counted.
+# Counters reset on restart.
+# The API time is always larger than the model time, because it includes validation
+# and the response.
+# In app.py, /health is a liveness check that never loads the model. /ready returns 200 once
+# the model has loaded, and 503 while loading or on failure. The model loads at startup,
+# which is why your log said "Model ready after 4.4 s".
 # Tests: tests/test_monitoring.py and tests/test_app_health_stats.py.
 
 """Request and model timing counters behind /stats and /metrics (K2).
